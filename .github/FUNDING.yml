@@ -1,0 +1,8 @@
+# Funding configuration для rb-amp org
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+custom: ["https://rbamp.com/early-access"]
+
+# Activate later if community asks:
+# github: [rb-amp]
+# open_collective: rbamp
