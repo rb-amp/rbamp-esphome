@@ -1,0 +1,116 @@
+# Three rbAmp modules on one I2C bus, broadcast LATCH for synchronized
+# snapshots.
+#
+# STATUS: works on v1 firmware via per-device sequential LATCH fallback.
+# True broadcast (single I2C general-call write to 0x00) is reserved for v1.1
+# firmware — v1 has GeneralCallMode = DISABLE in the slave I2C peripheral and
+# silently drops writes to 0x00 (see libs/spec/SPEC.md §9). The component
+# detects this at boot, logs an ESP_LOGW warning, and falls back to per-device
+# sequential LATCH each cycle. Skew is bounded by I2C transaction time × N
+# modules — ~270 µs × 3 = ~810 µs at 100 kHz, < 0.0015 % of the 60 s period.
+# Acceptable for energy metering. Leave `broadcast_latch: true` in place when
+# upgrading to v1.1 — the warning disappears automatically and the master
+# switches to single broadcast writes once REG_VERSION reports >= 0x02.
+#
+# Bus topology:
+#   ESP32 GPIO21 (SDA) ─┬── rbAmp #1 @ 0x50
+#                       ├── rbAmp #2 @ 0x51
+#                       └── rbAmp #3 @ 0x52
+#   ESP32 GPIO22 (SCL) ─┘
+#   External pull-ups: 4.7 kΩ to 3.3 V (cut the on-module pull-ups on #2
+#   and #3 — keep them only on #1 to avoid bus over-pull).
+#
+# Address provisioning:
+#   See address_change.yaml for the one-shot YAML flow. Provision each
+#   module sequentially:
+#     1. Connect only module-to-be-renamed to the ESP32.
+#     2. Flash address_change.yaml with the new target address.
+#     3. Verify success in logs, edit YAML.
+#     4. Connect the next module, repeat.
+
+esphome:
+  name: rbamp-multi
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+
+# I²C pin choice depends on ESP32 variant — see ui1.yaml header for the table.
+# Classic ESP32 (board: esp32dev): GPIO21 (SDA) / GPIO22 (SCL) is default.
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 50kHz    # 100 kHz triggers intermittent NACKs from the device; 50 kHz cuts them ~5-10×
+  scan: true
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [rbamp]
+
+# Each module has its own `rbamp:` block (MULTI_CONF=True in the component
+# schema). Setting `broadcast_latch: true` on ALL of them is what enables
+# the synchronized snapshot — only the first to fire will actually broadcast
+# in any given polling cycle, but all three will see the same chip-side
+# period boundary.
+rbamp:
+  - id: meter_house
+    address: 0x50
+    update_interval: 60s
+    broadcast_latch: true
+  - id: meter_solar
+    address: 0x51
+    update_interval: 60s
+    broadcast_latch: true
+    bidirectional: true   # solar export — but see "Known limitations" in README
+  - id: meter_evcharger
+    address: 0x52
+    update_interval: 60s
+    broadcast_latch: true
+
+sensor:
+  - platform: rbamp
+    rbamp_id: meter_house
+    voltage:
+      name: "House Voltage"
+    current:
+      name: "House Current"
+    power:
+      name: "House Power"
+    energy:
+      name: "House Energy"
+    frequency:
+      name: "Mains Frequency"
+  - platform: rbamp
+    rbamp_id: meter_solar
+    # Each UI* rbAmp has its own voltage front-end — declare it so power
+    # can be derived (the schema validator requires `voltage` alongside
+    # `power`/`energy`). For I-only SKUs, drop power/energy and keep only
+    # `current` here.
+    voltage:
+      name: "Solar Voltage"
+      internal: true  # hidden from HA UI — same mains as House Voltage
+    current:
+      name: "Solar Current"
+    power:
+      name: "Solar Power"
+    energy:
+      name: "Solar Energy"
+    energy_exported:
+      name: "Solar Energy Exported"
+  - platform: rbamp
+    rbamp_id: meter_evcharger
+    voltage:
+      name: "EV Charger Voltage"
+      internal: true
+    current:
+      name: "EV Charger Current"
+    power:
+      name: "EV Charger Power"
+    energy:
+      name: "EV Charger Energy"

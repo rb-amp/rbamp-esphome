@@ -1,0 +1,61 @@
+# One-shot rbAmp I2C address change (0x50 -> 0x51).
+#
+# Flow:
+#   1. Flash this YAML to the ESP32 ONCE.
+#   2. On boot, the component does:
+#        - Probe 0x50 (current address). If it answers, proceed.
+#          If 0x50 NACKs but 0x51 ACKs (e.g. you re-flashed and the change
+#          already happened previously), the component auto-adopts 0x51 and
+#          logs a warning telling you to clean up YAML — no re-write happens.
+#        - Verify REG_MODE = 1 (develop). On production firmware the change
+#          is refused and the component stays at 0x50 with a warning.
+#        - Write REG_I2C_ADDRESS = 0x51, CMD_SAVE_GAINS, wait 700 ms,
+#          CMD_RESET, wait 300 ms, then set_i2c_address(0x51).
+#   3. After confirming via HA logs that the change applied successfully,
+#      edit this YAML: change `address: 0x50` -> `address: 0x51` and DELETE
+#      the `new_address: 0x51` line. Re-flash.
+#   4. From the next boot, the component just uses 0x51 normally.
+#
+# REQUIREMENT: the device must be in its factory-provisioning mode for the
+# underlying CMD_SAVE_GAINS to be accepted. Standard production modules
+# refuse the operation. See the device's hardware documentation or contact
+# the manufacturer to enable factory mode for one-shot address provisioning.
+
+esphome:
+  name: rbamp-addr-change
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG  # see the address-change log lines clearly
+
+# I²C pin choice depends on ESP32 variant — see ui1.yaml header for the table.
+# Classic ESP32 (board: esp32dev): GPIO21 (SDA) / GPIO22 (SCL) is default.
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 50kHz    # 100 kHz triggers intermittent NACKs from the device; 50 kHz cuts them ~5-10×
+  scan: true
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [rbamp]
+
+rbamp:
+  id: meter1
+  address: 0x50         # current address (before the change)
+  new_address: 0x51     # one-shot target — REMOVE this line after success!
+  update_interval: 60s
+
+sensor:
+  - platform: rbamp
+    rbamp_id: meter1
+    voltage:
+      name: "rbAmp Voltage (post-relocate)"
+    current:
+      name: "rbAmp Current (post-relocate)"

@@ -1,0 +1,73 @@
+# Full rbAmp UI3 example — voltage + three current channels.
+#
+# This is the working configuration for our ESP32 + UI3 test bench.
+# All single-phase fields are exposed; auto-detect in setup() should report
+# 3 channels and voltage=yes.
+
+esphome:
+  name: rbamp-ui3
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+# I²C pin choice depends on ESP32 variant — see ui1.yaml header for the table.
+# Classic ESP32 (board: esp32dev): GPIO21 (SDA) / GPIO22 (SCL) is default.
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 50kHz    # 100 kHz triggers intermittent NACKs from the device; 50 kHz cuts them ~5-10×
+  scan: true
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [rbamp]
+
+rbamp:
+  id: meter1
+  address: 0x50
+  update_interval: 60s
+  # drdy_pin: GPIO15            # optional hint pin (open-drain on PA12)
+  # ct_model: SCT_013_030       # if your CT-clip needs explicit selection
+  # bidirectional: true         # STANDARD/PRO tier — export accumulator (TBD)
+
+sensor:
+  - platform: rbamp
+    rbamp_id: meter1
+    voltage:
+      name: "Mains Voltage"
+    frequency:
+      name: "Mains Frequency"
+    # Channel 0 (primary)
+    current:
+      name: "CH0 Current"
+    power:
+      name: "CH0 Power"
+    energy:
+      name: "CH0 Energy"
+    power_factor:
+      name: "CH0 Power Factor"
+    reactive_power:
+      name: "CH0 Reactive Power"
+    apparent_power:
+      name: "CH0 Apparent Power"
+    # Channel 1
+    current_1:
+      name: "CH1 Current"
+    power_1:
+      name: "CH1 Power"
+    energy_1:
+      name: "CH1 Energy"
+    # Channel 2
+    current_2:
+      name: "CH2 Current"
+    power_2:
+      name: "CH2 Power"
+    energy_2:
+      name: "CH2 Energy"

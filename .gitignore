@@ -1,0 +1,21 @@
+# ESPHome build artifacts
+.esphome/
+**/.esphome/
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Operator-local bench configs (operator credentials, lab-specific YAML)
+secrets.yaml
+bench-*.yaml
+**/bench-*.yaml
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

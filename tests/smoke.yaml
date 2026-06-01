@@ -1,0 +1,123 @@
+# Minimal compile-only smoke test for the rbamp external component.
+#
+# Goal: catch silent regressions in the YAML schema (esphome #7081 class —
+# components without automated tests can ship broken schemas unnoticed). This
+# file exercises:
+#   - top-level `rbamp:` block in MULTI_CONF mode (three distinct instances)
+#   - all single-phase sensor keys present at once on one instance
+#   - phased sensor keys on a separate instance (topology mutual-exclusion)
+#   - bidirectional + new_address + ct_model + broadcast_latch + topology hint
+#   - sensor_class enum + per-channel ct_models array (v0.4.0 / v1.2 surface)
+#
+# Run from this directory:
+#
+#   esphome compile smoke.yaml
+#
+# No hardware required — esphome only validates + compiles, doesn't flash.
+# Network credentials intentionally omitted; the bench-local YAMLs in
+# `example/` cover the runtime path.
+
+esphome:
+  name: rbamp-smoke
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 50kHz
+  scan: false
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [rbamp]
+
+rbamp:
+  # Legacy v1.0-compatible path: single global ct_model + default SCT_013 class
+  - id: meter_single
+    address: 0x50
+    update_interval: 60s
+    ct_model: SCT_013_030
+    bidirectional: true
+    broadcast_latch: true
+    topology: SINGLE
+  # v1.2-parity path: explicit sensor_class + per-channel ct_models array
+  - id: meter_mixed_cts
+    address: 0x52
+    update_interval: 60s
+    sensor_class: SCT_013
+    ct_models: [SCT_013_005, SCT_013_030, SCT_013_100]
+    topology: SINGLE
+  # Phased instance — separate topology validator
+  - id: meter_phased
+    address: 0x60
+    update_interval: 60s
+    topology: THREE_PHASE
+
+sensor:
+  - platform: rbamp
+    rbamp_id: meter_single
+    voltage:
+      name: "Smoke V"
+    current:
+      name: "Smoke I0"
+    current_1:
+      name: "Smoke I1"
+    current_2:
+      name: "Smoke I2"
+    power:
+      name: "Smoke P0"
+    power_1:
+      name: "Smoke P1"
+    power_2:
+      name: "Smoke P2"
+    energy:
+      name: "Smoke E0"
+    energy_1:
+      name: "Smoke E1"
+    energy_2:
+      name: "Smoke E2"
+    energy_exported:
+      name: "Smoke E0 exp"
+    power_factor:
+      name: "Smoke PF0"
+    reactive_power:
+      name: "Smoke Q0"
+    frequency:
+      name: "Smoke F"
+    apparent_power:
+      name: "Smoke S0"
+  - platform: rbamp
+    rbamp_id: meter_mixed_cts
+    voltage:
+      name: "Mixed V"
+    current:
+      name: "Mixed I0 (5A CT)"
+    current_1:
+      name: "Mixed I1 (30A CT)"
+    current_2:
+      name: "Mixed I2 (100A CT)"
+  - platform: rbamp
+    rbamp_id: meter_phased
+    voltage_a:
+      name: "Smoke Va"
+    voltage_b:
+      name: "Smoke Vb"
+    voltage_c:
+      name: "Smoke Vc"
+    current_a:
+      name: "Smoke Ia"
+    current_b:
+      name: "Smoke Ib"
+    current_c:
+      name: "Smoke Ic"
+    power_total:
+      name: "Smoke P_total"
