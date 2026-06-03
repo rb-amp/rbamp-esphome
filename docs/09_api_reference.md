@@ -663,33 +663,7 @@ All validation errors are reported during `esphome compile` with a human-readabl
 
 Conceptual flow of one `update()` cycle:
 
-```
-Module (autonomous)                 ESP32 (ESPHome component)
-─────────────────────────────────   ────────────────────────────────────────────
-Internal ADC sampling and
-RMS / P / PF / Q computation
-  ↓ (~200 ms per cycle)
-Atomically publishes the            update() fires every update_interval (60 s)
-instantaneous register block          ↓
-  ↓                                 phase 1 — latch:
-                                      write latch command
-Closes the period accumulator,        50 ms timeout (non-blocking)
-opens a new one                       ↓ (main loop keeps running)
-  ↓
-  wait 50 ms                        phase 2 — period snapshot:
-                                      read valid flag
-                                      read per-channel average powers
-                                      E_Wh[ch] += avg_P × dt_s / 3600
-                                      save to NVS if 5 minutes have passed
-                                      ↓
-                                    phase 3 — instantaneous values:
-                                      read status register
-                                      read U_rms, I[0..n]_rms, P[0..n],
-                                            PF[0..n], Q[0..n], frequency
-                                      publish all bound sensors
-                                      ↓
-                                    Pass state to HA over native API
-```
+![rbAmp ESPHome data flow and timings — module (autonomous) vs ESP32 update() phases](images/esphome-dataflow-timings.png)
 
 **Characteristic timings**:
 
