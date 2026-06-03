@@ -35,18 +35,7 @@ If GPIO21/22 are taken, pick any other valid pair and update the `i2c:` block in
 
 ## Single-module wiring
 
-```
-  ESP32                        rbAmp
-  ------                       +-----------+
-  GPIO22 (SCL) ────────────── SCL          |
-  GPIO21 (SDA) ────────────── SDA          |
-  5V           ────────────── VCC          |
-  GND          ────────────── GND          |
-                               |           |
-  (DRDY optional)              |           |
-  GPIO15 ◄──[10K to 3.3V]──── DRDY         |
-                               +-----------+
-```
+![rbAmp module connection — SCT-013 CT clamp, AC power terminal, and the I²C interface (Data Ready / SCL / SDA / GND / 5V)](images/U1I1-SCT-connection.png)
 
 External pull-up resistors are not needed for a single module — the rbAmp PCB carries built-in 4.7 kΩ pull-ups on SDA and SCL to 3.3 V.
 
