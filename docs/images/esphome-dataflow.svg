@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1146" height="310" viewBox="0 0 1146 310" font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif">
+  <rect x="40.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="153.0" y="80.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">AC mains</tspan></text>
+  <rect x="320.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="433.0" y="80.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">CT clamp + VT</tspan></text>
+  <rect x="600.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="713.0" y="69.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">rbAmp module (ADC +</tspan></text>
+  <text x="713.0" y="90.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">DSP)</tspan></text>
+  <rect x="880.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="993.0" y="80.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">I²C (physical units)</tspan></text>
+  <line x1="272.0" y1="76.0" x2="305.0" y2="76.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 305 71.0 L 305 81.0 L 314 76.0 Z" fill="#00203F"/>
+  <line x1="552.0" y1="76.0" x2="585.0" y2="76.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 585 71.0 L 585 81.0 L 594 76.0 Z" fill="#00203F"/>
+  <line x1="832.0" y1="76.0" x2="865.0" y2="76.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 865 71.0 L 865 81.0 L 874 76.0 Z" fill="#00203F"/>
+  <line x1="993.0" y1="116.0" x2="993.0" y2="185.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 988.0 184 L 998.0 184 L 993.0 194 Z" fill="#00203F"/>
+  <rect x="880.0" y="198.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="993.0" y="238.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">rbamp component</tspan></text>
+  <rect x="460.0" y="198.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="573.0" y="227.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">ESPHome</tspan></text>
+  <text x="573.0" y="248.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">(publish_state)</tspan></text>
+  <rect x="40.0" y="198.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
+  <text x="153.0" y="238.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">Home Assistant</tspan></text>
+  <line x1="874.0" y1="234.0" x2="701.0" y2="234.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 701.0 229.0 L 701.0 239.0 L 692.0 234.0 Z" fill="#00203F"/>
+  <line x1="454.0" y1="234.0" x2="281.0" y2="234.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 281 229.0 L 281 239.0 L 272 234.0 Z" fill="#00203F"/>
+</svg>

@@ -6,11 +6,7 @@
 
 ### Data flow (one-liner)
 
-```text
-230 V mains → CT clamp + VT → rbAmp module (ADC + DSP) → I²C (physical units)
-                                                              ↓
-                       Home Assistant ← ESPHome (publish_state) ← rbamp component
-```
+![rbAmp ESPHome data flow](images/esphome-dataflow.png)
 
 The key value proposition: **physical units come ready from the module**. There is no ADC on the ESP32 side, no DSP, no calibration tables, no RMS/power math. The ESPHome component is a thin I²C client + Wh integrator + HA publish layer. No `lambda:` math is required for basic operation.
 

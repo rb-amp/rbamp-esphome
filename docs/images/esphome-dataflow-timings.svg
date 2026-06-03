@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1256" height="810" viewBox="0 0 1256 810" font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif">
+  <rect x="40.0" y="40.0" width="560.0" height="46.0" rx="10" ry="10" fill="#00203F" stroke="none" stroke-width="1.5"/>
+  <text x="320.0" y="69.0" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16.5" fill="#ffffff" font-weight="700">Module (autonomous)</tspan></text>
+  <rect x="40.0" y="116.0" width="560.0" height="78.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="62.0" y="145.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">Internal ADC sampling and</tspan></text>
+  <text x="62.0" y="169.0" style="white-space:pre"><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">RMS / P / PF / Q</tspan><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400"> computation</tspan></text>
+  <line x1="320.0" y1="198.0" x2="320.0" y2="215.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 315.0 214 L 325.0 214 L 320.0 224 Z" fill="#00203F"/>
+  <text x="336.0" y="215.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="13" fill="#8a9ab0" font-weight="400">(~200 ms per cycle)</tspan></text>
+  <rect x="40.0" y="224.0" width="560.0" height="78.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="62.0" y="253.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">Atomically publishes the</tspan></text>
+  <text x="62.0" y="277.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">instantaneous register block</tspan></text>
+  <line x1="320.0" y1="306.0" x2="320.0" y2="323.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 315.0 322 L 325.0 322 L 320.0 332 Z" fill="#00203F"/>
+  <rect x="40.0" y="332.0" width="560.0" height="78.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="62.0" y="361.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">Closes the period accumulator,</tspan></text>
+  <text x="62.0" y="385.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">opens a new one</tspan></text>
+  <line x1="320.0" y1="414.0" x2="320.0" y2="431.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 315.0 430 L 325.0 430 L 320.0 440 Z" fill="#00203F"/>
+  <rect x="40.0" y="440.0" width="560.0" height="54.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="62.0" y="469.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">wait </tspan><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">50 ms</tspan></text>
+  <rect x="656.0" y="40.0" width="560.0" height="46.0" rx="10" ry="10" fill="#00203F" stroke="none" stroke-width="1.5"/>
+  <text x="936.0" y="69.0" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16.5" fill="#ffffff" font-weight="700">ESP32 (ESPHome component)</tspan></text>
+  <rect x="656.0" y="116.0" width="560.0" height="78.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="678.0" y="145.0" style="white-space:pre"><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">update()</tspan><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400"> fires every</tspan></text>
+  <text x="678.0" y="169.0" style="white-space:pre"><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">update_interval</tspan><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400"> (60 s)</tspan></text>
+  <line x1="936.0" y1="198.0" x2="936.0" y2="215.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 931.0 214 L 941.0 214 L 936.0 224 Z" fill="#00203F"/>
+  <rect x="656.0" y="224.0" width="560.0" height="102.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="678.0" y="253.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="15.5" fill="#00203F" font-weight="700">phase 1 — latch:</tspan></text>
+  <text x="696.0" y="277.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">write latch command</tspan></text>
+  <text x="696.0" y="301.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">50 ms timeout (non-blocking)</tspan></text>
+  <line x1="936.0" y1="330.0" x2="936.0" y2="347.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 931.0 346 L 941.0 346 L 936.0 356 Z" fill="#00203F"/>
+  <text x="952.0" y="347.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="13" fill="#8a9ab0" font-weight="400">(main loop keeps running)</tspan></text>
+  <rect x="656.0" y="356.0" width="560.0" height="150.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="678.0" y="385.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="15.5" fill="#00203F" font-weight="700">phase 2 — period snapshot:</tspan></text>
+  <text x="696.0" y="409.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">read valid flag</tspan></text>
+  <text x="696.0" y="433.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">read per-channel average powers</tspan></text>
+  <text x="696.0" y="457.0" style="white-space:pre"><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">E_Wh[ch] += avg_P × dt_s / 3600</tspan></text>
+  <text x="696.0" y="481.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">save to NVS if 5 minutes have passed</tspan></text>
+  <line x1="936.0" y1="510.0" x2="936.0" y2="527.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 931.0 526 L 941.0 526 L 936.0 536 Z" fill="#00203F"/>
+  <rect x="656.0" y="536.0" width="560.0" height="150.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="678.0" y="565.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="15.5" fill="#00203F" font-weight="700">phase 3 — instantaneous values:</tspan></text>
+  <text x="696.0" y="589.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">read status register</tspan></text>
+  <text x="696.0" y="613.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">read </tspan><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">U_rms, I[0..n]_rms, P[0..n],</tspan></text>
+  <text x="696.0" y="637.0" style="white-space:pre"><tspan font-family="'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" font-size="15" fill="#00203F" font-weight="400">PF[0..n], Q[0..n], frequency</tspan></text>
+  <text x="696.0" y="661.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">publish all bound sensors</tspan></text>
+  <line x1="936.0" y1="690.0" x2="936.0" y2="707.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 931.0 706 L 941.0 706 L 936.0 716 Z" fill="#00203F"/>
+  <rect x="656.0" y="716.0" width="560.0" height="54.0" rx="10" ry="10" fill="#ffffff" stroke="#e3e7eb" stroke-width="1.5"/>
+  <text x="678.0" y="745.0" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#1a2030" font-weight="400">Pass state to HA over native API</tspan></text>
+</svg>
