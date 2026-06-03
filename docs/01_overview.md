@@ -79,31 +79,7 @@ All instantaneous values are updated by the module autonomously with a step of ~
 
 ## Architecture
 
-```
-  230 V mains
-       |
-  +----+----+
-  | CT clamp |  (SCT-013 or built-in shunt — depends on SKU)
-  | voltage transformer |  (UI* SKUs only)
-  +---------+
-       |   galvanic isolation
-  +----|----+
-  |   ADC + DSP    sampling and RMS/P/PF computation
-  |  + I²C slave   address 0x50 (default), 50/100 kHz
-  +---------+
-       |   I²C (SDA/SCL + optional DRDY)
-  +----|----+
-  |  ESP32  |
-  |  ESPHome firmware (this component)
-  |  PollingComponent::update() every 60 s
-  |  master-side Wh accumulation
-  +---------+
-       |   Wi-Fi (ESPHome native API, port 6053)
-  +----|----+
-  |  Home Assistant
-  |  Energy dashboard, automations, history
-  +---------+
-```
+![rbAmp ESPHome architecture — AC mains to CT/VT to ADC+DSP+I²C slave to ESP32/ESPHome to Home Assistant](images/esphome-architecture.png)
 
 The measurement engine lives in the module; the ESP32 acts as a bridge to HA and an energy integrator. Wh is counted on the ESP32, not in the module — this matters for multi-module installations: the master's clock is more stable than the module's low-frequency oscillator, and accumulation across all modules remains consistent.
 
