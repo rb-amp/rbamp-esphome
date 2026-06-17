@@ -1,6 +1,6 @@
 # 08 · Home Assistant — deep dive
 
-This chapter covers the HA-specific details of working with rbAmp: discovery, the native API, Energy dashboard, long-term statistics, Lovelace cards, automations, and operation in environments where HA runs in Docker or WSL.
+This chapter covers the HA-specific details of working with rbAmp: discovery, the native API, the Energy dashboard, long-term statistics, Lovelace cards, automations, and operation in environments where HA runs in Docker or WSL.
 
 Cross-references:
 
@@ -15,26 +15,26 @@ Cross-references:
 
 ### mDNS auto-discovery (recommended)
 
-ESPHome nodes announce themselves over mDNS (multicast DNS) when an `api:` block is present in the YAML. The HA ESPHome integration listens for these announcements and automatically suggests new devices.
+ESPHome nodes announce themselves over mDNS (multicast DNS) when the YAML contains an `api:` block. The HA ESPHome integration listens for these announcements and automatically offers new devices.
 
-What it takes for auto-discovery to work:
+What auto-discovery needs in order to work:
 
-- The ESP32 and HA must be on the **same Layer 2 network segment** (one VLAN, no router between them). mDNS is multicast and does not cross routers without additional configuration (mDNS reflector / Avahi proxy).
-- UDP multicast must not be blocked by the router or by client-isolation features on the access point. Consumer APs often have "AP isolation" or "wireless isolation" — these block device-to-device multicast. Disable it for the IoT VLAN or specific devices.
-- HA must resolve mDNS correctly. In Docker / WSL deployments this sometimes requires extra network setup (see §10).
+- The ESP32 and HA must be on the **same Layer 2 network segment** (one VLAN, no router between them). mDNS is multicast and does not cross a router without extra configuration (mDNS reflector / Avahi proxy).
+- UDP multicast must not be blocked by the router or by a client-isolation feature on the access point. Consumer APs often have an "AP isolation" or "wireless isolation" feature — it blocks device-to-device multicast. Disable it for the IoT VLAN or for the specific devices.
+- HA must resolve mDNS correctly. In Docker / WSL deployments this sometimes requires extra network configuration (see §10).
 
 Discovery flow:
 
-1. Flash the ESP32 and let it boot. It joins Wi-Fi and starts announcing itself over mDNS as `<node_name>.local`.
-2. In HA: Settings → Devices & Services → Integrations. A "New devices found" banner appears, or look for ESPHome in the integration list with a discovery badge.
-3. Click "Configure" on the new entry. HA will ask for the encryption key if one is configured (§3).
+1. Flash the ESP32 and let it boot. It connects to WiFi and starts announcing itself over mDNS as `<node_name>.local`.
+2. In HA: Settings → Devices & Services → Integrations. A "New devices found" banner appears, or look for ESPHome in the integrations list with a discovery badge.
+3. Click "Configure" on the new entry. HA asks for the encryption key if one is configured (§3).
 4. All sensors are added to the device automatically.
 
-### Manual add (when mDNS is blocked)
+### Manual add (if mDNS is blocked)
 
 Settings → Devices & Services → Add Integration → ESPHome.
 
-Enter the ESP32 IP (find it in the router's DHCP table or in the ESPHome boot log — the line `[I][wifi:189]: IP: 192.168.x.y`). The default port is `6053`.
+Enter the ESP32's IP (check the router's DHCP table or the ESPHome boot log — the line `[I][wifi:189]: IP: 192.168.x.y`). The default port is `6053`.
 
 Assign a static DHCP lease for the ESP32's MAC address in the router so the IP does not change after a router reboot.
 
@@ -46,14 +46,14 @@ ESPHome supports two transports. Both work with rbAmp.
 
 | Property | Native API (port 6053) | MQTT |
 |---|---|---|
-| HA integration | First-class: dedicated ESPHome integration with auto-discovery | Generic: requires an MQTT broker, manual entity setup or MQTT discovery |
-| Encryption | Built in (noise protocol, optional) | Depends on broker TLS setup |
-| Latency | Low — direct TCP without a broker | Depends on the broker |
+| HA integration | First-class: a dedicated ESPHome integration with auto-discovery | Generic: requires an MQTT broker, manual entity setup or MQTT discovery |
+| Encryption | Built-in (noise protocol, optional) | Depends on the broker's TLS setup |
+| Latency | Low — direct TCP with no broker | Depends on the broker |
 | Reliability | Auto-reconnect | Depends on broker availability |
-| Without HA | Useless (the API is HA-specific) | Any MQTT subscriber can consume |
-| Setup complexity | No additional infrastructure | Requires a running MQTT broker |
+| Without HA | Useless (the API is HA-specific) | Any MQTT subscriber can consume it |
+| Setup complexity | No extra infrastructure | Requires a running MQTT broker |
 
-**Recommendation**: use the native API (the `api:` block) when HA is the primary consumer. Add `mqtt:` only if you also need a parallel non-HA consumer (Grafana, Node-RED, custom scripts). Both can coexist in one YAML.
+**Recommendation**: use the native API (`api:` block) when HA is the primary consumer. Add `mqtt:` only if you need a parallel non-HA consumer (Grafana, Node-RED, custom scripts). Both can coexist in one YAML.
 
 The native API is the path described in this document. MQTT details are in [`07_diy_integrations.md §2`](07_diy_integrations.md).
 
@@ -61,7 +61,7 @@ The native API is the path described in this document. MQTT details are in [`07_
 
 ## 3 · Encryption key
 
-By default the native API is unencrypted — any host on the local network can connect to port 6053. This is acceptable on a trusted home network. For tighter security, add a key:
+By default the native API is unencrypted — any host on the local network can connect to port 6053. That is acceptable for a trusted home network. For more security, add a key:
 
 ```yaml
 api:
@@ -69,13 +69,13 @@ api:
     key: "BASE64_ENCODED_32_BYTE_KEY"
 ```
 
-Generate a key:
+Generating a key:
 
 ```sh
 python3 -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
-When adding the device to HA (Settings → Devices & Services → ESPHome → Add), enter the same key. HA will store it in the integration config and use it automatically for all subsequent connections to that node.
+When you add the device to HA (Settings → Devices & Services → ESPHome → Add), enter the same key. HA stores it in the integration's configuration and uses it automatically for all subsequent connections to this node.
 
 Put the key in `secrets.yaml`:
 
@@ -91,13 +91,13 @@ api:
     key: !secret api_key
 ```
 
-When the key changes, the device must be removed from HA and re-added.
+If you change the key, you must remove and re-add the device in HA.
 
 ---
 
 ## 4 · Energy dashboard configuration
 
-The rbAmp `energy` sensor (and `energy_1`, `energy_2`, `energy_exported`, etc.) ship with the following preset:
+The rbAmp `energy` sensors (and `energy_1`, `energy_2`, `energy_exported`, etc.) arrive already configured with:
 
 ```
 device_class: energy
@@ -105,7 +105,7 @@ state_class: total_increasing
 unit_of_measurement: Wh
 ```
 
-This is exactly the combination the HA Energy dashboard expects for cumulative consumption or generation sensors. No additional YAML is required.
+This is exactly the combination the HA Energy dashboard expects for cumulative consumption or generation sensors. No extra YAML is needed.
 
 ### Adding sensors to the Energy dashboard
 
@@ -113,80 +113,79 @@ Settings → Dashboards → Energy. The dashboard has four sections:
 
 | Section | Which rbAmp sensor to use |
 |---|---|
-| Grid consumption | `energy` (grid import) |
-| Return to grid | `energy_exported` (STANDARD / PRO tiers; on BASIC and v1 firmware reads 0) |
-| Solar panels | `energy` from a module that meters the solar inverter output |
-| Home battery | N/A (rbAmp does not measure DC) |
+| Grid consumption | `energy` (import from the grid) |
+| Return to grid | `energy_exported` (STANDARD / PRO tiers; reads 0 on BASIC and v1 firmware) |
+| Solar panels | `energy` from a module measuring the solar inverter's output |
+| Home battery | Not applicable (rbAmp does not measure DC) |
 | Individual devices | `energy_1`, `energy_2`, etc. from a multi-channel module |
 
-For a single-component whole-house install:
+For a single whole-home install:
 
 1. Click "Add consumption" under Grid consumption.
-2. Pick the `Mains Energy` entity.
-3. Optionally set the tariff (EUR/kWh or your local currency) for cost tracking.
+2. Select the `Mains Energy` entity.
+3. Optionally set a tariff (EUR/kWh or your local currency) for cost tracking.
 
 For a three-module install (grid + solar + EV from Example 11 in [`06_examples.md`](06_examples.md)):
 
 1. Grid consumption: `House Energy` (from `meter_house`).
-2. Return to grid: `Solar Energy Exported` (from `meter_solar`, STANDARD / PRO tiers; on BASIC leave empty).
+2. Return to grid: `Solar Energy Exported` (from `meter_solar`, STANDARD / PRO tiers; leave empty on BASIC).
 3. Solar panels: `Solar Energy` (from `meter_solar`).
 4. Individual device: `EV Charger Energy` (from `meter_evcharger`).
 
 ### NVS persistence and the Energy dashboard
 
-The ESPHome component saves the running energy total to ESP32 NVS every 5 minutes. On boot the values are restored from NVS and published immediately — **before** HA connects and **before** the first `update_interval` fires.
+The ESPHome component saves total energy to the ESP32's NVS every 5 minutes. On boot the values are restored from NVS and published immediately — **before** HA connects and **before** the first `update_interval` fires.
 
-This keeps the Energy dashboard from interpreting an instantaneous `0 Wh` as a counter reset. If HA sees `total_increasing` drop to 0, it treats the difference as a billing-period boundary and resets the accumulated history.
+This keeps the Energy dashboard from interpreting a momentary `0 Wh` as a counter reset. If HA sees a `total_increasing` value drop to 0, it treats the difference as a billing-period boundary and discards the accumulated history.
 
-The worst-case data loss on sudden power failure is up to 5 minutes of accumulation (≈5 Wh at an average load of 60 W — invisible in daily totals).
+The worst-case data loss on a sudden power failure is up to 5 minutes of accumulation (≈5 Wh at an average 60 W load — invisible in daily totals).
 
-### `last_reset` after OTA or ESP32 reboot
+### `last_reset` after OTA or an ESP32 reboot
 
 The HA Energy dashboard uses device_class `energy` + state_class
-`total_increasing` without an explicit `last_reset` — this is the
-recommended configuration for ESPHome. On ESP32 reboot the
-component restores the value from NVS **before** the first
-`publish_state`, so HA sees a continuous monotonically increasing
-series and does **not** insert a sentinel reset into the chart.
-This is by design.
+`total_increasing` with no explicit `last_reset` binding — this is the
+recommended ESPHome configuration. On an ESP32 reboot the
+component restores the value from NVS **before** the first `publish_state`,
+so HA sees a continuous, monotonically increasing series and does **not** insert
+a sentinel reset into the graph. This works by design.
 
-Edge cases where you may see a visible "reset":
+Edge cases in which you may see a visible "reset":
 
-- **NVS is corrupted** (magic mismatch or CRC failure). The component
-  starts at 0 Wh and HA records a discontinuity. Symptom: the
-  dashboard shows a "morning spike" at boot after a long downtime.
-  *Fix*: check the ESP32 boot log for `[E][rbamp_nvs]` messages —
-  the cause will be there (incompatible NVS layout, low voltage at
-  write time, etc.). Restore from a HA history backup or scrub the
-  phantom spike with HA utilities.
+- **NVS is corrupted** (the magic does not match or the CRC fails). The component
+  starts at 0 Wh and HA records a discontinuity. Symptom: the dashboard shows
+  a "morning spike" at the moment the node boots after a long idle period.
+  *Fix*: check the ESP32 boot log for
+  `[E][rbamp_nvs]` messages — they point to the cause (an incompatible
+  NVS layout, low charge at the moment of the write, and so on). Restore from a backup
+  of the HA history or scrub the phantom spike with the HA utilities.
 
-- **Hardware swap** (new ESP32, same module). The component starts
-  at 0 Wh — the module does not transfer its accumulated total over
-  I²C (the module and the component each maintain their own
-  accumulators; the module exposes only instantaneous values for
-  integration). HA records a discontinuity.
-  *Fix*: after flashing the new ESP32, seed the initial energy value
-  via a manual `mqtt.publish` (for MQTT) or a temporary YAML edit
-  with a lambda initialization. Or accept the gap as a one-off event.
+- **Hardware replacement** (new ESP32, same module). The component starts
+  at 0 Wh — the module does not pass its accumulated count over I²C (the module and
+  the component keep separate accumulators; the module only provides
+  instantaneous values to integrate). HA records a discontinuity.
+  *Fix*: after flashing the new ESP32, seed the initial energy value with a manual `mqtt.publish` (for MQTT)
+  or a temporary YAML edit with a lambda initialization.
+  Or accept the discontinuity as a one-time event.
 
-- **`update_interval:` changed between flashes by a large margin**
-  (e.g. 60 → 600 s). The change itself does not reset anything, but
-  long cycles produce coarser "steps" in the chart. Visually it
-  looks like a change of accumulation mode; functionally it is fine.
+- **`update_interval:` changed between firmware builds by a noticeable amount**
+  (for example 60 → 600 s). The change by itself resets nothing, but
+  longer cycles produce coarser "steps" in the graph. Visually
+  it looks like a change in accumulation mode; functionally it is OK.
 
-- **HA recorder truncated or restored from an old backup**. This is
-  not on the ESPHome side — it is on the HA side: HA may treat some
-  future values as "past" and redraw the chart. Unrelated to ESPHome.
+- **The HA recorder was truncated or restored from an old backup**. This is not
+  on the ESPHome side — it is the HA side: HA may treat some
+  future values as "past" and redraw the graph. It has nothing to do
+  with ESPHome.
 
-On a normal OTA reflash, `last_reset` is not set, the NVS snapshot
-is restored ~50 ms before HA connects, and the Energy dashboard sees
-no discontinuity. This is the baseline scenario.
+During a routine OTA reflash, `last_reset` is not set, the NVS snapshot is
+restored ~50 ms before HA connects, and the Energy dashboard does not
+see a discontinuity. This is the baseline scenario.
 
 ---
 
 ## 5 · Utility meter
 
-The HA `utility_meter` integration derives sensors that reset periodically from any `total_increasing` sensor. Use it to get daily, weekly, and monthly kWh alongside the raw accumulator.
+The HA `utility_meter` integration derives periodically-resetting sensors from any `total_increasing` sensor. Use it to get daily, weekly, and monthly kWh in addition to the raw accumulator.
 
 ```yaml
 # configuration.yaml
@@ -204,7 +203,7 @@ utility_meter:
     cycle: yearly
 ```
 
-HA creates three new entities (`sensor.energy_daily`, etc.) that reset to 0 at the start of each period. They are well suited to individual-device views in the Energy dashboard and as a basis for cost-tracking template sensors.
+HA creates three new entities (`sensor.energy_daily`, etc.) that reset to 0 at the start of each period. They are great for individual device views in the Energy dashboard and as the basis for cost-tracking template sensors.
 
 Cost and kWh/day examples are in [`06_examples.md §10`](06_examples.md).
 
@@ -212,7 +211,7 @@ Cost and kWh/day examples are in [`06_examples.md §10`](06_examples.md).
 
 ## 6 · Statistics sensor for min / max / average
 
-The HA `statistics` sensor computes rolling min, max, mean and standard deviation over a configurable time window from the history of any sensor:
+The HA `statistics` sensor computes rolling min, max, mean, and standard deviation over a configurable time window from the history of any sensor:
 
 ```yaml
 # configuration.yaml
@@ -233,23 +232,23 @@ sensor:
       hours: 24
 ```
 
-The derived sensors are useful for demand management (peak-consumption window, monthly maximum for tariff billing) and anomaly detection (a 24-hour power maximum suddenly above historical norms).
+These derived sensors are useful for demand management (peak-consumption window, monthly maximum for tariff billing) and anomaly detection (if the 24-hour power maximum suddenly exceeds historical norms).
 
 ---
 
 ## 7 · Long-term statistics
 
-HA writes sensors with `state_class: total_increasing` and `state_class: measurement` into its long-term statistics database (LTS). LTS data is retained indefinitely (independent of the short-term recorder's retention).
+HA writes sensors with `state_class: total_increasing` and `state_class: measurement` into its long-term statistics database (LTS). LTS data is kept indefinitely (independent of the short-term recorder's retention).
 
-Verifying that an rbAmp sensor lands in LTS:
+To verify that an rbAmp sensor lands in LTS:
 
 1. Developer Tools → Statistics.
-2. Find the entity (e.g. `sensor.rbamp_ui1_mains_energy`).
-3. Make sure the row has a `statistic_id` and a recent `last_stats_ts`.
+2. Find the entity (for example `sensor.rbamp_ui1_mains_energy`).
+3. Confirm that its row has a `statistic_id` and a recent `last_stats_ts`.
 
-LTS is used by the Energy dashboard for historical views and is exported via HA's "Download statistics".
+LTS is used by the Energy dashboard for historical views and is exported through HA's "Download statistics".
 
-When the rbAmp module is replaced (new hardware, new entity ID), the old LTS history is not migrated automatically. To preserve history, keep the same `name:` for every sensor in the new YAML. ESPHome derives the entity ID from the node name plus the sensor name; matching names yield the same `statistic_id`.
+When you replace an rbAmp module (new hardware, new entity ID), the old LTS history is not migrated automatically. To preserve the history, keep the same `name:` for each sensor in the new YAML. ESPHome generates the entity ID from the node name plus the sensor name; matching names yield the same `statistic_id`.
 
 ---
 
@@ -257,7 +256,7 @@ When the rbAmp module is replaced (new hardware, new entity ID), the old LTS his
 
 ### Energy flow card (built-in)
 
-The HA Energy dashboard already contains an energy flow card at the top of the Energy settings page. It is rendered once the Energy dashboard is configured (grid consumption, solar, battery). No extra setup needed.
+The built-in HA Energy dashboard already includes an energy flow card at the top of the Energy settings page. It is drawn once the Energy dashboard is configured (grid consumption, solar, battery). No extra configuration is needed.
 
 ### Gauge
 
@@ -346,26 +345,26 @@ Both HA automations and ESPHome `on_value` callbacks react to changes in rbAmp s
 | Scenario | HA automation | ESPHome on_value |
 |---|---|---|
 | Push notification | Yes — access to all HA services (notify, TTS, etc.) | No — the ESP32 has no notification service |
-| Driving a relay on the same ESP32 | Possible (HA → switch), but adds latency | Yes — runs on-device, no network dependency |
-| Firing when HA is offline | No | Yes — the ESP32 acts autonomously |
-| Complex conditions (entity combos, history, calendar) | Yes | Limited — C++ Lambda, no access to HA state |
-| Reaction latency | ~1–5 s (Wi-Fi + API round-trip) | ~0 ms (same event loop) |
-| Reaction to MQTT publish | Yes (MQTT trigger) | N/A |
+| Driving a relay on the same ESP32 | Possible (HA → switch), but adds latency | Yes — runs on-device, with no network dependency |
+| Triggering when HA is offline | No | Yes — the ESP32 acts autonomously |
+| Complex conditions (combining entities, history, calendar) | Yes | Limited — Lambda in C++, with no access to HA state |
+| Reaction latency | ~1–5 s (WiFi + API round-trip) | ~0 ms (the same event loop) |
+| Reacting to an MQTT publish | Yes (MQTT trigger) | N/A |
 
-**Rule of thumb**: use ESPHome `on_value` for low-latency local actions (relay toggling, LED indicator, buzzer), and HA automations for anything that needs HA services (notifications, scene activation, calendar schedules, combinations with other entities).
+**Practical advice**: use ESPHome `on_value` for low-latency local actions (toggling a relay, an LED indicator, a buzzer), and HA automations for anything that needs HA services (notifications, scene activation, calendar scheduling, combinations with other entities).
 
-An example HA automation combining rbAmp and an HA switch:
+Example HA automation — combining rbAmp and an HA switch:
 
 ```yaml
 automation:
   - alias: "Cut dishwasher when peak tariff starts"
     trigger:
       - platform: time
-        at: "16:00:00"              # peak tariff start
+        at: "16:00:00"              # start of the peak tariff
     condition:
       - condition: numeric_state
         entity_id: sensor.rbamp_ui1_mains_power
-        above: 1500                 # only cut off when load is high
+        above: 1500                 # only switch off if the load is high
     action:
       - service: switch.turn_off
         target:
@@ -376,23 +375,23 @@ automation:
 
 ## 10 · WSL and Docker
 
-HA often runs in Docker (via the `homeassistant/home-assistant` image or Home Assistant OS in a VM). ESPHome runs either as the HA Add-on (in the same container environment) or as a separate Docker container.
+HA often runs in Docker (via the `homeassistant/home-assistant` image or Home Assistant OS in a VM). ESPHome runs either as an HA Add-on (in the same container environment) or as a separate Docker container.
 
 ### mDNS in Docker / WSL
 
 mDNS (multicast UDP 5353) does not cross Docker network boundaries by default. If HA is in Docker and the ESP32 is on the physical LAN:
 
-- **Docker host networking** (`--network host` on Linux) gives the container multicast access and usually solves the problem.
+- **Docker host networking** (`--network host` on Linux) gives the container access to multicast and usually solves the problem.
 - **mDNS reflector**: tools like `avahi-daemon` with a correct `allow-interfaces` or `mdns-repeater` bridge multicast between the Docker bridge (`docker0`) and the physical LAN interface.
 - **Manual add**: bypass mDNS entirely — add the ESP32 to the HA ESPHome integration manually by IP.
 
-On Windows with WSL2, the WSL2 VM has its own virtual network adapter. Docker containers inside can sit behind two NAT layers (Windows → WSL2 → Docker bridge). mDNS almost certainly will not work — add by IP.
+On Windows with WSL2, the WSL2 VM has its own virtual network adapter. Docker containers inside it can be behind two NAT layers (Windows → WSL2 → Docker bridge). mDNS almost certainly will not work — add by IP.
 
 ### ESPHome Add-on vs standalone ESPHome
 
-When using the HA ESPHome Add-on, the Add-on container shares its network namespace with HA (assuming `host` networking, which is the default for HA OS). mDNS and device discovery work without extra configuration.
+When you use the HA ESPHome Add-on, the Add-on container shares the network namespace with HA (assuming `host` networking, which is the default for HA OS). mDNS and device discovery work with no extra configuration.
 
-When running ESPHome as a standalone Docker container, make sure the container has access to the physical LAN (`--network host` on Linux) and that `/dev/ttyUSB0` (or your COM port) is forwarded for USB flashing:
+When you run ESPHome as a standalone Docker container, make sure the container has access to the physical LAN (`--network host` on Linux) and that `/dev/ttyUSB0` (or your COM port) is passed through for USB flashing:
 
 ```sh
 docker run -it --rm --network host \
@@ -403,34 +402,34 @@ docker run -it --rm --network host \
 
 ### Static IP for reliable OTA
 
-In Docker / VLAN environments, static DHCP leases for ESP32 devices with rbAmp are strongly recommended. They prevent:
+In a Docker / VLAN environment, static DHCP leases for rbAmp ESP32 devices are strongly recommended. They prevent:
 
-- The IP address recorded in the HA ESPHome integration entry going stale.
-- OTA flash failures (`esphome upload --device 192.168.x.y`).
-- Any automation that uses the API by IP.
+- A stale IP address recorded in HA for the ESPHome integration entry.
+- A failed OTA flash (`esphome upload --device 192.168.x.y`).
+- A failure of any automation that uses the API by IP.
 
 ---
 
 ## 11 · HACS (Home Assistant Community Store)
 
-HACS is a third-party integration manager for HA that gives access to community-developed cards, integrations and automations. It is not required for basic rbAmp operation, but it is useful for the richer Lovelace cards in §8.
+HACS is a third-party integration manager for HA that provides access to community-developed cards, integrations, and automations. It is not required for basic rbAmp operation, but it is useful for the richer Lovelace cards from §8.
 
-Install from <https://hacs.xyz/>. Then install these community cards:
+Install it from <https://hacs.xyz/>. Then install these community cards:
 
 | Card | HACS category | Use with rbAmp |
 |---|---|---|
-| `mini-graph-card` | Frontend | Power / current chart over time |
+| `mini-graph-card` | Frontend | Power / current graph over time |
 | `apexcharts-card` | Frontend | Multi-series charts |
 | `lovelace-card-mod` | Frontend | Custom CSS on any card |
-| `energy-flow-card-plus` | Frontend | Enhanced energy flow diagram |
+| `energy-flow-card-plus` | Frontend | Improved energy-flow diagram |
 
-HACS installation and management is covered in its own documentation. Each card is documented in its own GitHub repository.
+Installing and managing HACS is covered in its documentation. The cards are documented in their respective GitHub repositories.
 
 ---
 
-## 12 · Push notifications on threshold
+## 12 · Threshold push notifications
 
-The HA mobile app (`home-assistant.io/integrations/mobile_app`) provides push notifications to iOS and Android. Combined with rbAmp sensors, you get instant alerts for over-current, over-power, mains loss, or any other threshold:
+The HA mobile app (`home-assistant.io/integrations/mobile_app`) provides push notifications on iOS and Android. Combined with rbAmp sensors, you get instant alerts on over-current, over-power, loss of mains, or any other threshold:
 
 ```yaml
 automation:
@@ -438,7 +437,7 @@ automation:
     trigger:
       - platform: numeric_state
         entity_id: sensor.rbamp_ui1_mains_current
-        above: 14.0           # alert at 14 A (below the typical 16 A breaker)
+        above: 14.0           # alert at 14 A (below a typical 16 A breaker)
         for:
           seconds: 10
     action:
@@ -452,7 +451,7 @@ automation:
             push:
               sound:
                 name: default
-                critical: 1    # critical alert bypasses Do Not Disturb (iOS)
+                critical: 1    # a critical alert bypasses Do Not Disturb (iOS)
               interruption-level: critical
 
   - alias: "rbAmp mains loss alert"
@@ -469,50 +468,45 @@ automation:
           message: "Voltage dropped to {{ states('sensor.rbamp_ui1_mains_voltage') }} V."
 ```
 
-For the `notify.mobile_app_*` service to be available, the HA Companion app must be installed on the target device and the mobile-app integration configured in HA. Details at <https://companion.home-assistant.io/>.
+For the `notify.mobile_app_*` service to be available, the HA Companion app must be installed on the target device and the mobile-app integration must be set up in HA. Details are at <https://companion.home-assistant.io/>.
 
 ---
 
 ## 13 · HA ESPHome Add-on setup
 
-When using the HA ESPHome Add-on (recommended for most users):
+When you use the HA ESPHome Add-on (recommended for most users):
 
-1. The Add-on stores YAML configs in `/config/esphome/` (accessible through the HA file system or the Add-on editor UI).
+1. The Add-on stores the YAML configs in `/config/esphome/` (accessible through the HA file system or the Add-on's editor UI).
 2. `secrets.yaml` lives next to the device YAML files in `/config/esphome/`.
-3. The `external_components` path must be accessible from inside the Add-on container. Options:
-    - Copy the `components/rbamp/` directory to `/config/esphome/components/` and set `path: components/` (relative).
+3. The `external_components` path must be reachable from inside the Add-on container. Options:
+    - Copy the `components/rbamp/` directory into `/config/esphome/components/` and specify `path: components/` (relative).
     - Once the component is published on GitHub, use the remote form: `source: github://rb-amp/rbamp-esphome@main`.
-4. OTA: the Add-on runs the OTA flash itself — click "Install" on the device card and the Add-on will attempt OTA to the last known IP. USB flashing is also available through the Add-on's serial port if the ESP32 is plugged into the HA host.
+4. OTA: the Add-on performs the OTA flash itself — click "Install" on the device card and the Add-on attempts an OTA to the last known IP. USB flashing is also available through the Add-on's serial port if the ESP32 is connected to the HA host.
 
-The Add-on includes a built-in log viewer (the "Logs" button on the device card) — the equivalent of `esphome logs` on the CLI.
+The Add-on includes a built-in log viewer (the "Logs" button on the device card) — the equivalent of `esphome logs` in the CLI.
 
 ---
 
 ## 14 · Entity naming and entity ID stability
 
-HA entity IDs are derived from the ESPHome node name and the `name:` field of the sensor:
+Entity IDs in HA are derived from the ESPHome node name and the sensor's `name:` field:
 
 ```
 sensor.<node_name>_<sensor_name_lowercased_spaces_to_underscores>
 ```
 
-For node `rbamp-ui1` and sensor `name: "Mains Voltage"`:
+For the node `rbamp-ui1` and a sensor with `name: "Mains Voltage"`:
 
 ```
 sensor.rbamp_ui1_mains_voltage
 ```
 
-Entity IDs appear in automations, template sensors, Lovelace dashboards and Energy dashboard config. Changing a sensor's `name:` in YAML creates a **new** entity ID and breaks every reference to the old one. Plan sensor names before the first deployment.
+Entity IDs appear in automations, template sensors, Lovelace dashboards, and the Energy dashboard config. Changing a sensor's `name:` in the YAML creates a **new** entity ID and breaks every reference to the old one. Plan your sensor names before the first deployment.
 
-To rename a sensor without breaking its entity ID:
+To change a sensor's name without breaking the entity ID:
 
-1. Rename the sensor in YAML.
+1. Rename the sensor in the YAML.
 2. Reflash the device.
-3. In HA: Settings → Devices & Services → ESPHome → your device → click the sensor entity → click the gear icon → rename the entity ID back to the old value (or change it to the new one and update every reference).
+3. In HA: Settings → Devices & Services → ESPHome → your device → click the sensor entity → click the gear icon → rename the entity ID back to the old value (or change it to a new one and update all references).
 
-An alternative is HA's "Entity ID rename" feature (Settings → Entities → search → click an entity → edit name / entity ID) — it lets you decouple the display name from the entity ID. You can rename the display name freely without affecting automations.
-
-
----
-
-← [DIY Integrations](07_diy_integrations.md) · [Docs index](README.md) · [Schema Reference](09_api_reference.md) →
+An alternative is the HA "Entity ID rename" feature (Settings → Entities → search → click the entity → edit name / entity ID) — it lets you decouple the display name from the entity ID. You can freely rename the display name without affecting automations.

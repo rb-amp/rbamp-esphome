@@ -1,21 +1,21 @@
 # 07 · DIY integrations
 
-This chapter is about using rbAmp beyond the standard HA Energy dashboard: exporting to external time-series databases, publishing over MQTT without HA, closed-loop load control, and reading rbAmp from non-ESPHome masters.
+This chapter covers using rbAmp beyond the standard HA Energy dashboard: exporting to external time-series databases, publishing over MQTT without HA, closed-loop load control, and reading rbAmp from non-ESPHome masters.
 
 Cross-references:
 
 - YAML schema: [`09_api_reference.md`](09_api_reference.md)
-- HA-specific topics: [`08_has_integrations.md`](08_has_integrations.md)
-- Arduino client library: [`rbamp-arduino`](https://github.com/rb-amp/rbamp-arduino)
-- ESP-IDF client library: [`rbamp-esp-idf`](https://github.com/rb-amp/rbamp-esp-idf)
-- Python (CPython + MicroPython): [`rbamp-python`](https://github.com/rb-amp/rbamp-python)
-- STM32 HAL: [`rbamp-stm32-hal`](https://github.com/rb-amp/rbamp-stm32-hal) *(in development)*
+- HA specifics: [`08_has_integrations.md`](08_has_integrations.md)
+- Arduino client library: [`rbamp-arduino`](https://github.com/rbamp/rbamp-arduino)
+- ESP-IDF client library: [`rbamp-esp-idf`](https://github.com/rbamp/rbamp-esp-idf)
+- Python (CPython + MicroPython): [`rbamp-python`](https://github.com/rbamp/rbamp-python)
+- STM32 HAL: [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in development)*
 
 ---
 
 ## 1 · InfluxDB and Grafana via Home Assistant
 
-The simplest path to InfluxDB + Grafana requires no YAML changes. Home Assistant itself exports all entity states to InfluxDB through the native integration:
+The simplest path to InfluxDB + Grafana requires no YAML changes. Home Assistant exports all entity states to InfluxDB through its native integration:
 
 ```yaml
 # configuration.yaml in HA
@@ -34,7 +34,7 @@ influxdb:
       - sensor.rbamp_ui1_mains_frequency
 ```
 
-Every rbAmp sensor publication (once per `update_interval`) becomes a point in InfluxDB. Grafana then queries InfluxDB and renders dashboards.
+Every rbAmp sensor publication (once per `update_interval`) becomes a point in InfluxDB. Grafana then queries InfluxDB and builds the dashboards.
 
 A minimal Grafana panel for live power:
 
@@ -56,19 +56,19 @@ from(bucket: "homeassistant")
 
 ### High-resolution InfluxDB (bypassing HA)
 
-The HA state machine only records state changes. For a dense series with a point every 60 s (the default `update_interval`) HA is fine. If you need sub-minute resolution — lower `update_interval` and let HA recorder + the InfluxDB integration capture at that rate:
+The HA state machine only records state changes. For a dense series with a point every 60 s (the default `update_interval`), HA is fine. If you need sub-minute resolution, lower the `update_interval` and let the HA recorder + InfluxDB integration capture at that rate:
 
 ```yaml
 rbamp:
   id: meter1
-  update_interval: 10s     # 10-second resolution — 6× I²C traffic, acceptable
+  update_interval: 10s     # 10-second resolution — ×6 I²C traffic, acceptable
 ```
 
 ---
 
-## 2 · Direct MQTT publish (no HA)
+## 2 · Direct MQTT publish (without HA)
 
-ESPHome ships with a built-in `mqtt:` component that publishes all sensor states to a broker. rbAmp sensors are published on every `update_interval` like any other.
+ESPHome has a built-in `mqtt:` component that publishes all sensor states to a broker. rbAmp sensors are published on every `update_interval` just like any others.
 
 ```yaml
 esphome:
@@ -86,8 +86,9 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-# NOTE: use mqtt: OR api: — not both at once, unless you actually need
-# both HA native API and MQTT in parallel (supported but unusual).
+# NOTE: use mqtt: OR api: — not both at the same time, unless you
+# specifically need both the HA native API and MQTT in parallel
+# (supported, but non-standard).
 mqtt:
   broker: 192.168.0.200      # IP of your MQTT broker
   port: 1883
@@ -152,7 +153,7 @@ Any MQTT subscriber — Node-RED, InfluxDB Telegraf, OpenHAB, a custom Python sc
 
 ### MQTT retained messages
 
-Add `retain: true` per sensor if subscribers connecting after publication should immediately see the last value:
+Add `retain: true` to each sensor if subscribers that connect after a publication must immediately see the last value:
 
 ```yaml
 sensor:
@@ -160,8 +161,8 @@ sensor:
     rbamp_id: meter1
     voltage:
       name: "Mains Voltage"
-      # ESPHome MQTT does not set retain on sensor state by default. For
-      # retain, use a manual publish action:
+      # ESPHome MQTT does not set retain on sensor state by default. For retain,
+      # use a manual publish action:
       on_value:
         - mqtt.publish:
             topic: "rbamp/ui1/voltage"
@@ -169,48 +170,47 @@ sensor:
             retain: true
 ```
 
-### MQTT retain and OTA — what to know
+### MQTT retain and OTA — what you need to know
 
-Retained messages survive an ESP32 restart (that is their core purpose).
-This creates two scenarios worth knowing about up front:
+Retained messages survive an ESP32 restart (that is their primary purpose).
+This creates two scenarios worth knowing about in advance:
 
-1. **OTA update of the node**. After flashing, the ESP32 reboots. Old
-   retained values stay on the broker and remain visible to subscribers
-   for ~5..30 seconds (until the node reconnects and publishes new
-   ones). If the node never comes back (corrupted firmware, fatal
-   crash on boot) — the stale retained values stay visible
-   **indefinitely**. This masks the offline state from dashboards that
-   only read `state` without `status`.
+1. **OTA update of a node**. After flashing, the ESP32 reboots. The old
+   retained values stay in the broker and remain visible to subscribers for
+   ~5..30 seconds (until the node reconnects and publishes new ones).
+   If the node never comes back (corrupted firmware, fatal crash on boot),
+   the old retained values will be displayed **indefinitely**. This
+   masks the offline state from dashboards that read only
+   `state` without `status`.
 
-   **Mitigation**: always set a `will_message:` (LWT) on the `status`
-   topic (as in the example above). The broker will set the payload
-   to `offline` when the connection drops; subscribers can watch
-   `status` to detect stuck nodes. Sensor topics will keep their old
-   values — that is fine, but subscribers now know the data is stale.
+   **Mitigation**: always set a `will_message:` (LWT) on the
+   `status` topic (as in the example above). The broker will set the
+   `offline` payload when the connection drops; subscribers can watch
+   `status` to detect hung nodes. The sensor topics will still hold the
+   old values in this case — that is normal, but subscribers know the data
+   is stale.
 
-2. **Changing `topic_prefix:` between flashes**. If you rename
-   `topic_prefix:` (e.g. `rbamp/ui1` → `rbamp/kitchen`) and update the
-   node over OTA — retained messages under the **old** prefix stay on
-   the broker forever. Subscribers unaware of the rename will keep
-   seeing stale data on zombie topics.
+2. **Changing `topic_prefix:` between firmware builds**. If you rename
+   `topic_prefix:` (for example `rbamp/ui1` → `rbamp/kitchen`) and update
+   the node over OTA, the retained messages under the **old** prefix
+   stay in the broker forever. Subscribers that are unaware of the change
+   keep seeing stale data from the zombie topics.
 
-   **Mitigation**: before flashing OTA with a renamed prefix, clean the
-   old retained messages by publishing an empty payload with
-   `retain: true` on each old topic (CLI:
-   `mosquitto_pub -h <broker> -t '<old>' -r -n`). Without that, the
-   zombies hang around until someone clears them by hand.
+   **Mitigation**: before an OTA with a renamed prefix, clear the old
+   retained messages by publishing an empty payload with `retain: true` on
+   each old topic (CLI: `mosquitto_pub -h <broker> -t '<old>' -r -n`).
+   Without this, the zombies hang around until someone clears them manually.
 
-3. **Birth message and `start_session: true`** for connection after
-   broker restart — see the ESPHome `mqtt:` block documentation for
-   the `clean_session:` and `keepalive:` options. These parameters
-   control how the broker handles pending QoS 1/2 messages on
-   disconnect.
+3. **Birth message and `start_session: true`** for reconnecting after
+   a broker restart — see the ESPHome `mqtt:` block documentation for the
+   `clean_session:` and `keepalive:` options. These parameters control how
+   the broker handles pending QoS 1/2 messages on disconnect.
 
 ---
 
 ## 3 · ESPHome Lambda actions
 
-The ESPHome `on_value` callback fires on every new sensor reading. You can use it for threshold actions executed entirely on the ESP32 with no HA round-trip.
+The ESPHome `on_value` callback fires on every new sensor reading. You can use it for threshold actions executed entirely on the ESP32 without a round-trip through HA.
 
 ### Current threshold alarm
 
@@ -224,19 +224,19 @@ sensor:
         then:
           - if:
               condition:
-                lambda: 'return x > 15.0f;'    # 15 A overload threshold
+                lambda: 'return x > 15.0f;'    # over-current threshold 15 A
               then:
                 - logger.log:
                     level: WARN
-                    format: "Over-current: %.2f A — firing alarm relay"
+                    format: "Over-current: %.2f A — triggering alarm relay"
                     args: [x]
                 - switch.turn_on: alarm_relay
 ```
 
-### Load-step detection (custom Lambda)
+### Detecting a load step (custom Lambda)
 
 ```yaml
-# Detecting a sharp load increase (e.g. compressor startup)
+# Detecting a sharp increase in load (e.g. a compressor start)
 globals:
   - id: prev_power
     type: float
@@ -257,7 +257,7 @@ sensor:
               id(prev_power) = x;
 ```
 
-### Publishing to a custom MQTT topic on threshold
+### Publishing to a custom MQTT topic on a threshold
 
 ```yaml
 sensor:
@@ -278,15 +278,15 @@ sensor:
 
 ---
 
-## 4 · Closed-loop control — PID water heater
+## 4 · Closed-loop control — water heater PID
 
-A typical use case for residential rbAmp metering is solar self-consumption: heat water with excess solar power instead of exporting it to the grid.
+A typical use case for rbAmp home metering is solar self-consumption: heat water with surplus solar power instead of exporting it to the grid.
 
-The pattern uses two rbAmp modules: one on the grid feed (import / export), one on the water heater circuit. A PWM relay or SSR on the heater enables variable power control.
+The pattern uses two rbAmp modules: one on the grid feed (import / export), one on the water-heater circuit. A PWM relay or SSR on the heater enables variable power control.
 
 ```yaml
-# Conceptual sketch — the actual PID implementation depends on your
-# relay / SSR and load. The ESPHome PID controller component is the
+# Conceptual sketch — the concrete PID implementation depends on your
+# relay / SSR and load. The PID controller component in ESPHome is the
 # recommended building block.
 
 globals:
@@ -314,7 +314,7 @@ sensor:
       # Positive = import, negative = export (STANDARD/PRO tiers with correct wiring)
       on_value:
         - lambda: |-
-            // If grid power is negative — export (solar surplus).
+            // If grid power is negative, that is export (solar surplus).
             // Raise the heater setpoint to absorb the surplus.
             float export_w = -x;
             if (export_w > 100.0f) {
@@ -325,7 +325,7 @@ sensor:
             }
 
 output:
-  - platform: ledc          # PWM output to an SSR or 0-10 V controller
+  - platform: ledc          # PWM output to an SSR or 0-10V controller
     pin: GPIO5
     id: heater_pwm
     frequency: 100Hz
@@ -334,18 +334,18 @@ interval:
   - interval: 10s
     then:
       - lambda: |-
-          // Drive PWM proportionally to setpoint (0–2000 W → 0–100% duty)
+          // Drive PWM proportionally to the setpoint (0–2000 W → 0–100% duty)
           float duty = id(heater_setpoint_w) / 2000.0f;
           id(heater_pwm).set_level(duty);
 ```
 
-> **Note**: bidirectional power (negative values = export) requires the STANDARD or PRO tier with correct voltage polarity wiring. On BASIC, firmware clamps the **average** active power per period to `P ≥ 0` — instantaneous P still reads negative during generation, but the period export accumulator stays empty. Per-tier behavior is in [`02_tiers.md`](02_tiers.md), polarity wiring in [`04_hardware.md`](04_hardware.md).
+> **Note**: bidirectional power (negative values = export) requires a STANDARD or PRO tier with correct voltage-polarity wiring. On BASIC, the firmware clamps the **average** active power over the period to `P ≥ 0` — instantaneous P still reads negative at the moment of generation, but the export period accumulator stays empty. Per-tier behavior is in [`02_tiers.md`](02_tiers.md), polarity wiring is in [`04_hardware.md`](04_hardware.md).
 
 ---
 
-## 5 · Callback chaining through the ESPHome API
+## 5 · Chaining callbacks through the ESPHome API
 
-The ESPHome native API (port 6053) can trigger external Python scripts over the WebSocket API without a permanently running HA.
+The ESPHome native API (port 6053) can be used to trigger external Python scripts via the WebSocket API without a continuously running HA.
 
 The `aioesphomeapi` Python library (`pip install aioesphomeapi`) gives direct async access to entity states:
 
@@ -358,7 +358,7 @@ async def main():
     await cli.connect(login=True)
 
     def on_state(state):
-        # Called on every sensor publish
+        # Called on every sensor publication
         print(f"State: {state}")
 
     await cli.subscribe_states(on_state)
@@ -369,17 +369,17 @@ asyncio.run(main())
 
 The pattern is useful for:
 
-- Feeding rbAmp readings into a custom control loop that does not fit the YAML Lambda model in ESPHome.
+- Feeding rbAmp readings into a custom control loop that doesn't fit into the YAML Lambda model of ESPHome.
 - Logging to a custom format or database.
-- Threshold logic in Python when the ESP32's 512 KB of RAM constrains complex math.
+- Threshold logic in Python, when the 512 KB RAM of the ESP32 is a limit for complex math.
 
-The API client runs on any Python 3.8+ host on the same network — Raspberry Pi, Docker container, development laptop.
+The API client runs on any Python 3.8+ host on the same network — a Raspberry Pi, a Docker container, a development laptop.
 
 ---
 
 ## 6 · Apparent power — client-side calculation
 
-When `apparent_power` is declared in the `sensor:` block, the component computes `S = U_rms × I_rms[ch0]` on the ESP32 from two fresh readings. If you need apparent power for multiple channels (CH1, CH2) or want to derive it from HA entities rather than from the component itself — use an HA `template` sensor:
+When `apparent_power` is declared in the `sensor:` block, the component computes `S = U_rms × I_rms[ch0]` on the ESP32 from two fresh readings. If you need apparent power for several channels (CH1, CH2), or want to derive it from HA entities rather than from the component itself, use a `template` sensor in HA:
 
 ```yaml
 # configuration.yaml in HA
@@ -410,27 +410,27 @@ Note: `apparent_power` in the ESPHome schema uses only the CH0 current. The temp
 
 ## 7 · Reading rbAmp without ESPHome
 
-The rbAmp module is a plain I²C slave. Any I²C master can read it using the protocol from [`SPEC.md`](https://rbamp.com/docs/modules-basic-standard-api-reference). The sister client libraries (distribution repositories — placeholders until publication):
+The rbAmp module is an ordinary I²C slave. Any I²C master can read it using the protocol from [`SPEC.md`](https://www.rbamp.com/docs/modules-basic-standard-api-reference). The sister client libraries (distribution repositories — placeholders until publication):
 
 | Library | Distribution | Language | Target platform |
 |---|---|---|---|
-| Arduino | [`rbamp-arduino`](https://github.com/rb-amp/rbamp-arduino) | C++ | ESP32 (Arduino framework), AVR, RP2040 |
-| ESP-IDF | [`rbamp-esp-idf`](https://github.com/rb-amp/rbamp-esp-idf) | C | ESP32 (IDF framework) |
-| Python (CPython + MicroPython) | [`rbamp-python`](https://github.com/rb-amp/rbamp-python) | Python 3 | Raspberry Pi, Linux SBC, PC, ESP32/RP2040/STM32 on MicroPython |
-| STM32 HAL | [`rbamp-stm32-hal`](https://github.com/rb-amp/rbamp-stm32-hal) *(in development)* | C | STM32 (HAL), other Cortex-M |
+| Arduino | [`rbamp-arduino`](https://github.com/rbamp/rbamp-arduino) | C++ | ESP32 (Arduino framework), AVR, RP2040 |
+| ESP-IDF | [`rbamp-esp-idf`](https://github.com/rbamp/rbamp-esp-idf) | C | ESP32 (IDF framework) |
+| Python (CPython + MicroPython) | [`rbamp-python`](https://github.com/rbamp/rbamp-python) | Python 3 | Raspberry Pi, Linux SBC, PC, ESP32/RP2040/STM32 on MicroPython |
+| STM32 HAL | [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in development)* | C | STM32 (HAL), other Cortex-M |
 
 All libraries implement the same register map and period-metering protocol as the ESPHome component. They can be used independently or in parallel.
 
 ### When NOT to use ESPHome
 
-- You already have a non-ESPHome ESP32 firmware and need to add rbAmp reads — use the ESP-IDF library and call its API directly.
+- You already have non-ESPHome ESP32 firmware and need to add rbAmp reads — use the ESP-IDF library and call the API directly.
 - The master is a Raspberry Pi or another Linux SBC — use the Python library.
-- You have a STM32-based PLC or custom board — STM32 HAL.
-- A quick prototype on Arduino UNO or Leonardo — the Arduino library.
+- You have an STM32 PLC or a custom board — STM32 HAL.
+- A quick prototype on an Arduino UNO or Leonardo — the Arduino library.
 
 ### Cross-platform energy accumulation — a note
 
-The ESPHome component uses NVS-persisted `double` accumulators that survive reboots. Sister libraries may use other persistence mechanisms — see each library's `10_troubleshooting.md` (energy persistence section) for details and forward-compatibility specifics. If you are migrating from ESPHome to bare-metal firmware, plan the data migration: read the last Wh value out of HA before the swap and seed the new firmware's accumulator with it.
+The ESPHome component uses NVS-persisted `double` accumulators that survive a reboot. The sister libraries may use different persistence mechanisms — for the details and forward compatibility of a specific library, see its `10_troubleshooting.md` (energy persistence section). If you migrate from ESPHome to bare-metal firmware, plan the data migration: export the last Wh value from HA before the swap and seed the new firmware's accumulator with it.
 
 ---
 
@@ -440,18 +440,13 @@ The ESPHome component uses NVS-persisted `double` accumulators that survive rebo
 
 Tasmota has no native rbAmp driver. The cleanest bridge is to use ESPHome as the rbAmp reader and Tasmota as a separate I²C master for other devices, without mixing them.
 
-If you really need Tasmota for rbAmp itself — use Berry scripting (Tasmota 12.x+) to write a custom driver performing the I²C reads per SPEC §6. The MicroPython library in `rbamp-python` is a useful reference for register addresses and float decoding.
+If you specifically need Tasmota for rbAmp, use Berry scripting (Tasmota 12.x+) to write a custom driver that performs the I²C reads — single byte per address phase for writes, optional READ-burst for the instantaneous-values block (see [09 · API reference](09_api_reference.md)). The MicroPython library from `rbamp-python` is a useful reference for register addresses and float decoding.
 
 ### WLED
 
-WLED (firmware for LED controllers) does not expose an I²C master to user scripts. rbAmp and WLED can be independent devices on the same bus only if they live on separate bus segments or have non-conflicting addresses. There is no official bridge.
+WLED (firmware for LED controllers) does not expose an I²C master in user scripts. rbAmp and WLED can be independent devices on the same bus only if they are on separate bus segments or have non-conflicting addresses. There is no official bridge.
 
 ### OpenHAB
 
-ESPHome publishes data over MQTT (see Example 2) or the native API (`aioesphomeapi`). The OpenHAB MQTT binding can subscribe to ESPHome topics and deliver rbAmp readings into OpenHAB rules and Items. MQTT binding configuration is documented in the OpenHAB docs.
+ESPHome publishes data over MQTT (see Example 2) or the native API (`aioesphomeapi`). The OpenHAB MQTT binding can subscribe to the ESPHome topics and deliver rbAmp readings into OpenHAB rules and Items. MQTT binding configuration is covered in the OpenHAB documentation.
 
-
-
----
-
-← [Examples](06_examples.md) · [Docs index](README.md) · [Home Assistant](08_has_integrations.md) →
