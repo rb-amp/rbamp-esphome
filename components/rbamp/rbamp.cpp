@@ -1,4 +1,5 @@
 #include "rbamp.h"
+#include "rbamp_const.h"
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
@@ -11,55 +12,14 @@ namespace rbamp {
 
 static const char *const TAG = "rbamp";
 
-// Register addresses — mirror of the device's I²C register map.
-// The device's firmware does NOT auto-increment the register pointer: every
-// byte read requires a fresh address phase. read_float_le_ does this
-// internally.
-static constexpr uint8_t REG_STATUS              = 0x00;
-static constexpr uint8_t REG_COMMAND             = 0x01;
-static constexpr uint8_t REG_ERROR               = 0x02;
-static constexpr uint8_t REG_VERSION             = 0x03;
-static constexpr uint8_t REG_MODE                = 0x04;
-static constexpr uint8_t REG_CT_MODEL            = 0x05;
-static constexpr uint8_t REG_PHASE_SAMPLES       = 0x06;
-static constexpr uint8_t REG_PERIOD_VALID        = 0x07;
+// All wire-contract register addresses + command opcodes live in rbamp_const.h
+// (manual-synced from libs/esp_idf/components/rbamp/include/rbamp_registers_v2.h —
+// see source-hash comment in that header). Do NOT inline new magic constants
+// here; add them to rbamp_const.h instead so cross-library drift stays
+// O(1)-detectable.
 
-static constexpr uint8_t REG_AC_FREQ             = 0x20;
-static constexpr uint8_t REG_SENSOR_CLASS        = 0x25;  // v1.2+ firmware
-static constexpr uint8_t REG_I2C_ADDRESS         = 0x30;
-
-static constexpr uint8_t REG_U_RMS               = 0x86;
-static constexpr uint8_t REG_U_PEAK              = 0x8A;
-static constexpr uint8_t REG_I0_RMS              = 0x8E;
-static constexpr uint8_t REG_I1_RMS              = 0x92;
-static constexpr uint8_t REG_I2_RMS              = 0x96;
-static constexpr uint8_t REG_P0_REAL             = 0xA6;
-static constexpr uint8_t REG_P1_REAL             = 0xAA;
-static constexpr uint8_t REG_P2_REAL             = 0xAE;
-static constexpr uint8_t REG_PF0                 = 0xB2;
-static constexpr uint8_t REG_PF1                 = 0xB6;
-static constexpr uint8_t REG_PF2                 = 0xBA;
-static constexpr uint8_t REG_PERIOD_AVG_P1       = 0xC2;
-static constexpr uint8_t REG_PERIOD_AVG_P2       = 0xC6;
-static constexpr uint8_t REG_DATA_VALID          = 0xCE;
-static constexpr uint8_t REG_Q0                  = 0xD0;
-static constexpr uint8_t REG_Q1                  = 0xD4;
-static constexpr uint8_t REG_Q2                  = 0xD8;
-static constexpr uint8_t REG_PERIOD_AVG_P0       = 0xDC;
-static constexpr uint8_t REG_PERIOD_MAX_P        = 0xE0;
-static constexpr uint8_t REG_PERIOD_LATCH_MS     = 0xEC;
-
-static constexpr uint8_t CMD_RESET               = 0x01;
-static constexpr uint8_t CMD_SAVE_GAINS          = 0x26;
-static constexpr uint8_t CMD_LATCH_PERIOD        = 0x27;
-// v1.2+ per-channel CT model selection commands. Write CMD_SET_CT_MODEL_CH<N>
-// to REG_COMMAND, then write the model code to REG_CT_MODEL, then CMD_SAVE_GAINS.
-static constexpr uint8_t CMD_SET_CT_MODEL_CH0    = 0x28;
-static constexpr uint8_t CMD_SET_CT_MODEL_CH1    = 0x29;
-static constexpr uint8_t CMD_SET_CT_MODEL_CH2    = 0x2A;
-
-// STANDARD/PRO export accumulator — addresses TBD in firmware (J.10 deferred).
-// 0xFF means "skip reading; field not supported by current firmware".
+// STANDARD/PRO export accumulator — addresses TBD in firmware. 0xFF means
+// "skip reading; field not supported by current firmware".
 static constexpr uint8_t REG_PERIOD_AVG_P_NEG[3] = {0xFF, 0xFF, 0xFF};
 
 // ============================================================================
@@ -105,18 +65,19 @@ bool RbAmpComponent::read_float_le_(uint8_t reg, float *out) {
     }
   }
   std::memcpy(out, buf, 4);
-  // Loose sanity only — see SPEC §B.5 (cross-library discipline). NO physical
-  // lower bounds: brownout (U=0 V on mains disconnect), voltage sag, off-grid
-  // / UPS test, and breaker-trip events MUST pass through to HA so users see
-  // their real state instead of stale values. NaN/Inf would poison the energy
-  // accumulator permanently (NaN + x = NaN); the |val| < 10000 cap catches
-  // Inf-adjacent ghost bytes that survive retry. The workhorse against I2C
-  // NACK noise is the retry above + the 50 kHz bus speed in YAML, not this
-  // filter. See baton 2026-05-24T19:00Z for the architectural rationale.
+  // Loose sanity at the I/O boundary — catches NaN/Inf (would poison the
+  // energy accumulator: NaN + x = NaN) and Inf-adjacent IDF buffer-leak
+  // ghost bytes. Threshold loosened in S4 from 10000 to 1e6 (per docs #7):
+  // power readings can legitimately exceed 10 kW (e.g. P_ch* on a 32A
+  // single-channel 230V deployment = up to ~7.3 kW per channel, fleet sums
+  // can be tens of kW). 1e6 still catches obvious garbage (IDF leak typically
+  // produces 1.96V-shaped floats in the ~1.96 range, well below 1e6).
+  // Per-quantity tight bounds are applied at publish sites in publish_rt_block_
+  // and finish_latch_phase_ via the static sanity_* helpers in rbamp.h.
   if (!std::isfinite(*out)) {
     return false;
   }
-  if (std::fabs(*out) > 10000.0f) {
+  if (std::fabs(*out) > 1e6f) {
     return false;
   }
   return true;
@@ -223,7 +184,17 @@ void RbAmpComponent::load_prefs_() {
 
   // Validate before restoring — NaN/Inf in NVS would poison the accumulator
   // permanently (NaN + x = NaN), and negative totals are nonsensical for
-  // consumption (cap to 0 rather than abort restore).
+  // unidirectional (BASIC tier) consumption energy (cap to 0 rather than
+  // abort restore).
+  //
+  // TODO(STANDARD-signedness, v1.4+): on STANDARD/PRO firmware with
+  // FW_TIER bit2 (bidirectional), REG_V03_PERIOD_AVG_P (0xDC) is signed —
+  // net energy can legitimately be < 0 (net export). For that tier, replace
+  // the `e >= 0.0` guard with `e > -kReasonableLowerBound` so net-export
+  // totals survive NVS restore. Currently no-op since BASIC unidirectional
+  // is the only shipping tier; the guard reads as "drop garbage" today and
+  // becomes "drop garbage but keep negative net" when STANDARD lands.
+  // Truth-doc §9.2 HOLD-resolved → revisit signedness handling at that point.
   for (uint8_t ch = 0; ch < 3; ch++) {
     double e = saved.energy_total_wh[ch];
     if (std::isfinite(e) && e >= 0.0) {
@@ -281,24 +252,45 @@ void RbAmpComponent::apply_ct_model_() {
     return;
   }
 
-  ESP_LOGCONFIG(TAG, "  Writing CT_MODEL = 0x%02X to RAM + flash", this->ct_model_);
+  // S4 read-compare-write: REG_CT_MODEL_CH0 (0x51) mirrors the applied value
+  // for ch0, which is what the legacy single-channel path targets. Skip if
+  // already matches.
+  uint8_t current_ch0 = 0;
+  if (this->read_u8_(REG_CT_MODEL_CH0, &current_ch0) && current_ch0 == this->ct_model_) {
+    ESP_LOGD(TAG, "CT_MODEL ch0 already 0x%02X — no write needed (read-compare-write skip)", current_ch0);
+    return;
+  }
+
+  ESP_LOGCONFIG(TAG, "  Writing CT_MODEL = 0x%02X to RAM + flash (was 0x%02X)",
+                this->ct_model_, current_ch0);
   if (!this->write_u8_(REG_CT_MODEL, this->ct_model_)) {
     ESP_LOGW(TAG, "Write of CT_MODEL register failed");
     return;
   }
   delay(10);
-  if (!this->write_u8_(REG_COMMAND, CMD_SAVE_GAINS)) {
-    ESP_LOGW(TAG, "CMD_SAVE_GAINS failed; CT model not persisted");
+  if (!this->save_user_config_()) {
     return;
   }
-  // Flash erase + 32-word write window. Master must NOT issue further
-  // operations during this — the slave NACKs everything mid-write. Feed
-  // the watchdog so a future ESPHome tightening of setup() timing budget
-  // doesn't trip on us (IP-009 audit hardening, 2026-05-28).
-  App.feed_wdt();
-  delay(700);
-  App.feed_wdt();
   ESP_LOGCONFIG(TAG, "  CT_MODEL persisted; remove `ct_model:` from YAML after verification");
+}
+
+bool RbAmpComponent::save_user_config_() {
+  // v1.3 firmware ships CMD_SAVE_USER_CONFIG (0x32) as the canonical opcode
+  // for persisting user-config writes (SENSOR_CLASS, CT_MODEL, ADDRESS,
+  // FLEET_CONFIG, GROUP_ID). Legacy v1.0-v1.2 firmware only supports
+  // CMD_SAVE_GAINS (0x26) and routes the same flash sector through it.
+  // Capability-gate so v1.3 boards use the cleaner opcode without breaking
+  // older deployments.
+  uint8_t opcode = this->check_capability_(CAP_SAVE_USER_CONFIG)
+                    ? CMD_SAVE_USER_CONFIG : CMD_SAVE_GAINS;
+  if (!this->write_u8_(REG_COMMAND, opcode)) {
+    ESP_LOGW(TAG, "Save opcode 0x%02X failed; config not persisted", opcode);
+    return false;
+  }
+  App.feed_wdt();
+  delay(SETTLE_MS_SAVE_USER_CONFIG);  // same 700 ms on both codepaths
+  App.feed_wdt();
+  return true;
 }
 
 void RbAmpComponent::apply_sensor_class_() {
@@ -310,45 +302,113 @@ void RbAmpComponent::apply_sensor_class_() {
     return;
   }
 
+  // S4 read-compare-write: skip the 700 ms flash erase entirely if the device
+  // already has the requested sensor_class. v1.3 read-back is direct (the
+  // register holds the applied value); on legacy firmware where REG_SENSOR_CLASS
+  // doesn't exist (returns 0 for unmapped reads), the comparison
+  // requested!=0 → write proceeds (correct fallback).
+  uint8_t current = 0xFF;
+  if (this->read_u8_(REG_SENSOR_CLASS, &current) && current == this->sensor_class_request_) {
+    ESP_LOGD(TAG, "SENSOR_CLASS already 0x%02X — no write needed (read-compare-write skip)",
+             current);
+    return;
+  }
+
   // UNSET (0) is a legitimate sensor_class value (rare; user-explicit reset
   // before a model swap). Still requires develop mode + flash write.
   if (!this->check_develop_mode_("Sensor class write")) {
     return;
   }
 
-  ESP_LOGCONFIG(TAG, "  Writing SENSOR_CLASS = 0x%02X to RAM + flash",
-                this->sensor_class_request_);
+  ESP_LOGCONFIG(TAG, "  Writing SENSOR_CLASS = 0x%02X to RAM + flash (was 0x%02X)",
+                this->sensor_class_request_, current);
   if (!this->write_u8_(REG_SENSOR_CLASS, this->sensor_class_request_)) {
     ESP_LOGW(TAG, "Write of REG_SENSOR_CLASS failed");
     return;
   }
   delay(10);
-  if (!this->write_u8_(REG_COMMAND, CMD_SAVE_GAINS)) {
-    ESP_LOGW(TAG, "CMD_SAVE_GAINS failed; sensor_class not persisted");
-    return;
-  }
-  // Same flash-write timing as apply_ct_model_; same WDT-feed discipline.
   // On v1.2+ firmware this write also resets REG_CT_MODEL to 0 device-side
   // (prevents stale class/model bleed across a two-step provisioning),
   // which means apply_ct_model_() / apply_ct_models_per_channel_() MUST run
   // after this method — setup() enforces the order.
-  App.feed_wdt();
-  delay(700);
-  App.feed_wdt();
+  if (!this->save_user_config_()) {
+    return;
+  }
   ESP_LOGCONFIG(TAG,
                 "  SENSOR_CLASS persisted; remove `sensor_class:` from YAML after verification");
 }
 
 void RbAmpComponent::apply_ct_models_per_channel_() {
+  // S4 read-compare-write: REG_CT_MODEL_CH0/1/2 (0x51-0x53) are v1.3 read-back
+  // mirrors that report the actually-applied model per channel. Skip the
+  // entire per-channel write sequence (3 × 700 ms flash erase = ~2.1 s)
+  // if all requested channels already match the device-side state.
+  // On legacy firmware where 0x51-0x53 are unmapped (returns 0): the
+  // comparison fails for any non-zero requested code → write proceeds.
+  uint8_t current_ch[3] = {0, 0, 0};
+  bool readback_ok = true;
+  for (uint8_t ch = 0; ch < 3; ch++) {
+    if (!this->read_u8_(REG_CT_MODEL_CH0 + ch, &current_ch[ch])) {
+      readback_ok = false;
+      break;
+    }
+  }
+  if (readback_ok) {
+    bool all_match = true;
+    for (uint8_t ch = 0; ch < 3; ch++) {
+      const uint8_t requested = this->ct_models_request_[ch];
+      if (requested == 0xFF) continue;  // not requested in YAML; no constraint
+      if (current_ch[ch] != requested) {
+        all_match = false;
+        break;
+      }
+    }
+    if (all_match) {
+      ESP_LOGD(TAG, "Per-channel CT models already match device state "
+               "[ch0=0x%02X ch1=0x%02X ch2=0x%02X] — no write needed (read-compare-write skip)",
+               current_ch[0], current_ch[1], current_ch[2]);
+      return;
+    }
+    ESP_LOGCONFIG(TAG,
+                  "  Per-channel CT models differ from device state — applying writes "
+                  "[device: ch0=0x%02X ch1=0x%02X ch2=0x%02X, requested: ch0=0x%02X ch1=0x%02X ch2=0x%02X]",
+                  current_ch[0], current_ch[1], current_ch[2],
+                  this->ct_models_request_[0], this->ct_models_request_[1],
+                  this->ct_models_request_[2]);
+  } else {
+    ESP_LOGD(TAG, "REG_CT_MODEL_CH0/1/2 unreadable (legacy firmware?) — applying writes unconditionally");
+  }
+
   if (!this->check_develop_mode_("Per-channel CT model write")) {
     return;
   }
 
-  // Write higher channels first. Each per-channel write also clobbers ch0 as
-  // a side effect of the device-side legacy direct-write callback (the chip
-  // applies the most-recent REG_CT_MODEL value to channel 0 unconditionally
-  // after a CMD_SET_CT_MODEL_CHn opcode), so ch0 must be written LAST to
-  // settle on the operator-intended value.
+  // Canon per-channel write sequence (truth-doc §7 + arduino + esp-idf):
+  //   1. write REG_CT_MODEL = code  (scratch register)
+  //   2. write REG_COMMAND  = CMD_SET_CT_MODEL_CHn  (opcode latches scratch to ch n)
+  //   3. sleep SETTLE_MS_SET_CT_MODEL_CHN (5 ms — chip latches to channel storage)
+  //   4. write REG_COMMAND  = CMD_SAVE_GAINS  (persist to flash; S4 will switch
+  //      to CMD_SAVE_USER_CONFIG once capability-gated for v1.0-v1.2 compat)
+  //   5. sleep SETTLE_MS_SAVE_GAINS (700 ms flash erase + write)
+  //
+  // Channel iteration order is DESCENDING (ch2 → ch1 → ch0). Rationale: the
+  // CT_MODEL scratch is shared; once SAVE_GAINS fires after each
+  // CMD_SET_CT_MODEL_CHn, the per-channel storage is committed and subsequent
+  // iterations don't disturb it. Descending keeps ch0 as the LAST write so a
+  // mid-sequence master reset would leave ch0 (the most common single-channel
+  // SKU) in the operator-intended state rather than zeroed.
+  //
+  // Verification: REG_CT_MODEL_CH0/1/2 (0x51-0x53) expose the actually-applied
+  // model per channel for post-write readback. S4 will use them for the
+  // read-compare-write boot-time optimization (docs #2).
+  //
+  // L7 (cross-canon verify): the previous impl had the order INVERTED
+  // (CMD_SET_CT_MODEL_CHn first, then REG_CT_MODEL=code, then SAVE_GAINS).
+  // The descending iteration was originally justified as compensating for a
+  // "ch0 clobber side-effect" — that was a misread of the chip's scratch-
+  // register semantics. The actual canon is: REG_CT_MODEL is the input to
+  // each CMD_SET_CT_MODEL_CHn opcode, so it must be written FIRST per channel.
+  // Descending iteration is still preserved (different rationale above).
   static constexpr uint8_t PER_CH_CMD[3] = {
       CMD_SET_CT_MODEL_CH0,
       CMD_SET_CT_MODEL_CH1,
@@ -359,27 +419,272 @@ void RbAmpComponent::apply_ct_models_per_channel_() {
     if (code == 0xFF) {
       continue;  // channel not requested in YAML
     }
-    ESP_LOGCONFIG(TAG, "  Writing CT_MODEL ch%d = 0x%02X to RAM + flash", ch, code);
-    if (!this->write_u8_(REG_COMMAND, PER_CH_CMD[ch])) {
-      ESP_LOGW(TAG, "Per-channel CT model CMD_SET_CT_MODEL_CH%d failed", ch);
-      continue;
-    }
-    delay(10);
+    ESP_LOGCONFIG(TAG, "  Writing CT_MODEL ch%d = 0x%02X (canon: REG_CT_MODEL -> CMD_SET_CT_MODEL_CH%d -> SAVE_USER_CONFIG)", ch, code, ch);
     if (!this->write_u8_(REG_CT_MODEL, code)) {
-      ESP_LOGW(TAG, "Write of REG_CT_MODEL for ch%d failed", ch);
+      ESP_LOGW(TAG, "Write of REG_CT_MODEL=0x%02X for ch%d failed", code, ch);
       continue;
     }
-    delay(10);
-    if (!this->write_u8_(REG_COMMAND, CMD_SAVE_GAINS)) {
-      ESP_LOGW(TAG, "CMD_SAVE_GAINS for ch%d failed; CT model not persisted", ch);
+    if (!this->write_u8_(REG_COMMAND, PER_CH_CMD[ch])) {
+      ESP_LOGW(TAG, "CMD_SET_CT_MODEL_CH%d failed", ch);
       continue;
     }
-    App.feed_wdt();
-    delay(700);
-    App.feed_wdt();
+    delay(SETTLE_MS_SET_CT_MODEL_CHN);
+    if (!this->save_user_config_()) {
+      ESP_LOGW(TAG, "Save for ch%d failed; CT model not persisted", ch);
+      continue;
+    }
   }
   ESP_LOGCONFIG(TAG,
                 "  Per-channel CT models persisted; remove `ct_models:` from YAML after verification");
+}
+
+bool RbAmpComponent::check_capability_(uint16_t bit) {
+  if (!this->capability_cached_) {
+    uint8_t buf[2] = {0, 0};
+    if (this->read_register(REG_CAPABILITY, buf, 2) != i2c::ERROR_OK) {
+      // Capability register not implemented on v1.0-v1.2 firmware; treat as
+      // "no capabilities" → all caller-side feature gates fall back to legacy
+      // path. ESP_LOGD because this is normal on older devices.
+      ESP_LOGD(TAG, "REG_CAPABILITY unreadable — assuming v1.0-v1.2 firmware (no capabilities advertised)");
+      this->cached_capability_ = 0;
+      this->capability_cached_ = true;
+      return false;
+    }
+    this->cached_capability_ = static_cast<uint16_t>(buf[0]) |
+                                (static_cast<uint16_t>(buf[1]) << 8);
+    this->capability_cached_ = true;
+    ESP_LOGCONFIG(TAG, "  Capability bitmap: 0x%04X", this->cached_capability_);
+  }
+  return (this->cached_capability_ & bit) != 0;
+}
+
+void RbAmpComponent::apply_fleet_config_() {
+  // Apply REG_FLEET_CONFIG.bit0 (GC_ENABLE) + REG_GROUP_ID if YAML requested.
+  // Both writes are user-config (need CMD_SAVE_USER_CONFIG + CMD_RESET to
+  // take effect — FLEET_CONFIG is not toggled live per the v2 spec note).
+  // Capability-gated: if the device doesn't advertise CAP_GC_LATCH, skip
+  // with a warning so users on older firmware get clear feedback.
+  if (this->fleet_gc_enable_request_ == 0xFF && !this->group_id_request_valid_) {
+    return;  // nothing to apply
+  }
+
+  if (!this->check_capability_(CAP_GC_LATCH)) {
+    ESP_LOGW(TAG,
+             "fleet_gc_enable / group_id requested but the device does not "
+             "advertise CAP_GC_LATCH (REG_CAPABILITY 0x57 bit1). General-call "
+             "broadcast LATCH requires v1.3+ firmware. Per-device sequential "
+             "LATCH still runs each cycle. Remove the YAML keys to silence "
+             "this warning.");
+    return;
+  }
+
+  if (!this->check_develop_mode_("Fleet config write")) {
+    return;
+  }
+
+  bool need_save = false;
+
+  if (this->fleet_gc_enable_request_ != 0xFF) {
+    uint8_t current = 0;
+    bool have_current = this->read_u8_(REG_FLEET_CONFIG, &current);
+    uint8_t desired = (this->fleet_gc_enable_request_ ? (current | 0x01)
+                                                       : (current & ~0x01));
+    if (!have_current || current != desired) {
+      ESP_LOGCONFIG(TAG, "  Writing FLEET_CONFIG = 0x%02X (was 0x%02X)", desired,
+                    have_current ? current : 0xFF);
+      if (!this->write_u8_(REG_FLEET_CONFIG, desired)) {
+        ESP_LOGW(TAG, "Write of REG_FLEET_CONFIG failed");
+      } else {
+        need_save = true;
+      }
+    } else {
+      ESP_LOGD(TAG, "FLEET_CONFIG already 0x%02X — no write needed", current);
+    }
+  }
+
+  if (this->group_id_request_valid_) {
+    uint8_t current = 0;
+    bool have_current = this->read_u8_(REG_GROUP_ID, &current);
+    if (!have_current || current != this->group_id_request_) {
+      ESP_LOGCONFIG(TAG, "  Writing GROUP_ID = 0x%02X (was 0x%02X)",
+                    this->group_id_request_, have_current ? current : 0xFF);
+      if (!this->write_u8_(REG_GROUP_ID, this->group_id_request_)) {
+        ESP_LOGW(TAG, "Write of REG_GROUP_ID failed");
+      } else {
+        need_save = true;
+      }
+    } else {
+      ESP_LOGD(TAG, "GROUP_ID already 0x%02X — no write needed", current);
+    }
+  }
+
+  if (need_save) {
+    // FLEET_CONFIG.bit0 only takes effect after RESET — no live toggle. Save
+    // user config, then reset, then re-probe.
+    if (!this->write_u8_(REG_COMMAND, CMD_SAVE_USER_CONFIG)) {
+      ESP_LOGW(TAG, "CMD_SAVE_USER_CONFIG failed; fleet config not persisted");
+      return;
+    }
+    App.feed_wdt();
+    delay(SETTLE_MS_SAVE_USER_CONFIG);
+    App.feed_wdt();
+
+    // Reset the device so FLEET_CONFIG.bit0 takes effect (general-call
+    // reception is configured at IDLE-state init time, not toggleable live).
+    this->write_u8_(REG_COMMAND, CMD_RESET);
+    delay(SETTLE_MS_RESET);
+    App.feed_wdt();
+
+    // Verify the slave woke up
+    uint8_t ver = 0;
+    if (!this->read_u8_(REG_VERSION, &ver)) {
+      ESP_LOGW(TAG, "Device did not respond after fleet config reset");
+    } else {
+      ESP_LOGCONFIG(TAG, "  Fleet config applied; device returned at fw 0x%02X", ver);
+    }
+  }
+}
+
+bool RbAmpComponent::transmit_gc_frame() {
+  if (!this->check_capability_(CAP_GC_LATCH)) {
+    ESP_LOGW(TAG, "transmit_gc_frame() skipped — CAP_GC_LATCH not advertised");
+    return false;
+  }
+
+  // 5-byte canonical frame to address 0x00 (general call). Group filter on
+  // the slave side rejects if frame[2] != REG_GROUP_ID and != 0x00.
+  uint16_t tick = ++this->gc_tick_counter_;
+  if (tick == 0) tick = 1;  // skip 0xFFFF -> 0 wrap which collides with "never received" sentinel
+
+  uint8_t frame[5] = {
+      GC_FRAME_MAGIC,
+      GC_FRAME_OPCODE,
+      this->group_id_request_,
+      static_cast<uint8_t>(tick & 0xFF),
+      static_cast<uint8_t>((tick >> 8) & 0xFF),
+  };
+
+  // Raw bus-level write to address 0x00 — bypasses our own device address.
+  // Uses the underlying bus_; not all I2CBus impls expose a public general-
+  // call surface, so fall back to a per-byte write on i2c::ERROR_NOT_ACKNOWLEDGED
+  // (general-call reads typically NACK because there's no responding device
+  // on the bus to ACK the address phase — the spec allows this).
+  auto err = this->bus_->write(0x00, frame, sizeof(frame), true);
+  if (err != i2c::ERROR_OK && err != i2c::ERROR_NOT_ACKNOWLEDGED) {
+    ESP_LOGW(TAG, "GC frame bus write failed: err=%d, tick=%u", static_cast<int>(err), tick);
+    return false;
+  }
+  ESP_LOGD(TAG, "GC frame tx: group=0x%02X tick=%u", this->group_id_request_, tick);
+  return true;
+}
+
+bool RbAmpComponent::gc_witness_check_() {
+  // Post-GC verification (truth-doc §5 + OI-4): after the chip-side 300 ms
+  // settle from the GC LATCH command, REG_PERIOD_VALID should show bit0=1 if
+  // this slave accepted the LATCH and produced fresh snapshot data. Returns
+  // true if PERIOD_VALID confirms uptake; false on any failure (read failure,
+  // bit0=0). Caller decides whether to fall back to per-device LATCH.
+  uint8_t valid = 0;
+  if (!this->read_u8_(REG_PERIOD_VALID, &valid)) {
+    ESP_LOGD(TAG, "GC witness check: PERIOD_VALID read failed");
+    return false;
+  }
+  if ((valid & 0x01) == 0) {
+    ESP_LOGD(TAG, "GC witness check: PERIOD_VALID=0 (no fresh snapshot — slave likely rejected GC)");
+    return false;
+  }
+  return true;
+}
+
+std::string RbAmpComponent::get_variant_str() {
+  uint8_t v = 0;
+  if (!this->read_u8_(REG_HW_VARIANT, &v)) return "UNK";
+  switch (v) {
+    case 1: return "UI1";
+    case 2: return "UI2";
+    case 3: return "UI3";
+    case 4: return "I1";
+    case 5: return "I2";
+    case 6: return "I3";
+    default: return "UNK";
+  }
+}
+
+std::string RbAmpComponent::get_capability_hex() {
+  this->check_capability_(0);  // populate cached_capability_ as side-effect
+  char buf[8];
+  snprintf(buf, sizeof(buf), "0x%04X", this->cached_capability_);
+  return std::string(buf);
+}
+
+std::string RbAmpComponent::get_uid_hex() {
+  uint8_t buf[12];
+  if (this->read_register(REG_UID, buf, 12) != i2c::ERROR_OK) {
+    return "UNREADABLE";
+  }
+  char hex[2 * 12 + 1] = {0};
+  int p = 0;
+  for (uint8_t i = 0; i < 12; i++) {
+    p += snprintf(hex + p, sizeof(hex) - p, "%02X", buf[i]);
+  }
+  return std::string(hex);
+}
+
+std::string RbAmpComponent::get_last_error_str() {
+  uint8_t e = 0;
+  if (!this->read_u8_(REG_ERROR, &e)) return "UNREADABLE";
+  switch (e) {
+    case DEV_ERR_OK:                return "OK";
+    case DEV_ERR_CLONE:              return "ERR_CLONE";
+    case DEV_ERR_LUT_BAD:            return "ERR_LUT_BAD";
+    case DEV_ERR_FLASH_PARAMS_BAD:   return "ERR_FLASH_PARAMS_BAD";
+    case DEV_ERR_NOT_READY:          return "ERR_NOT_READY";
+    case DEV_ERR_SENSOR_OVERFLOW:    return "ERR_SENSOR_OVERFLOW";
+    case DEV_ERR_PARAM:              return "ERR_PARAM";
+    case DEV_ERR_UNHANDLED:          return "ERR_UNHANDLED";
+    default: {
+      char buf[16];
+      snprintf(buf, sizeof(buf), "ERR_0x%02X", e);
+      return std::string(buf);
+    }
+  }
+}
+
+uint8_t RbAmpComponent::get_event_flags() {
+  uint8_t f = 0;
+  if (!this->read_u8_(REG_EVENT_FLAGS, &f)) return 0;
+  return f;
+}
+
+bool RbAmpComponent::write_clear_error() {
+  // Capability-gated: CAP_CLEAR_ERROR (bit10). On legacy firmware where the
+  // opcode is unimplemented, the write may be silently dropped; caller
+  // shouldn't rely on it without verifying capability.
+  if (!this->check_capability_(CAP_CLEAR_ERROR)) {
+    ESP_LOGW(TAG, "CMD_CLEAR_ERROR skipped — CAP_CLEAR_ERROR not advertised");
+    return false;
+  }
+  return this->write_u8_(REG_COMMAND, CMD_CLEAR_ERROR);
+}
+
+bool RbAmpComponent::write_reset() {
+  // RESET — the slave may NACK the ACK because RESET fires before the bus
+  // cycle completes; treat the write result as advisory.
+  this->write_u8_(REG_COMMAND, CMD_RESET);
+  return true;
+}
+
+bool RbAmpComponent::fleet_apply_now() {
+  this->apply_fleet_config_();
+  return true;
+}
+
+uint16_t RbAmpComponent::read_gc_tick_received() {
+  uint8_t lo = 0, hi = 0;
+  if (!this->read_u8_(REG_GC_TICK, &lo) || !this->read_u8_(REG_GC_TICK + 1, &hi)) {
+    return 0xFFFF;  // "never received" sentinel
+  }
+  return static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
 }
 
 void RbAmpComponent::apply_address_change_() {
@@ -394,35 +699,68 @@ void RbAmpComponent::apply_address_change_() {
     return;
   }
 
-  if (!this->check_develop_mode_("Address change")) {
-    return;
-  }
-
   ESP_LOGCONFIG(TAG, "  Changing I2C address: 0x%02X -> 0x%02X",
                 this->address_, new_addr);
 
-  if (!this->write_u8_(REG_I2C_ADDRESS, new_addr)) {
-    ESP_LOGW(TAG, "Write of REG_I2C_ADDRESS failed; keeping 0x%02X", this->address_);
+  // S4: v1.3 two-phase commit (capability-gated). Per truth-doc §6 +
+  // CAP_TWO_PHASE_ADDR (REG_CAPABILITY bit7), v1.3 firmware supports a
+  // safer address-change flow that does NOT require factory-provisioning
+  // mode:
+  //   1. Write REG_I2C_ADDRESS = candidate (staged in RAM; subsequent reads
+  //      of 0x30 return the staged value)
+  //   2. Write REG_ADDR_COMMIT_MAGIC = 0xA5 (arms the commit — magic is
+  //      consumed on commit attempt regardless of success)
+  //   3. Write REG_COMMAND = CMD_COMMIT_ADDR (opcode 0x30) — atomically
+  //      moves staged → live and saves to flash
+  //   4. Wait SETTLE_MS_COMMIT_ADDR (700 ms — flash erase + write window)
+  //   5. Slave starts ACKing on new address; verify by REG_VERSION read
+  //
+  // Legacy fallback (v1.0-v1.2): single-phase REG_I2C_ADDRESS + SAVE +
+  // RESET, gated on factory-provisioning mode (REG_MODE=1) per the old
+  // contract.
+  bool two_phase = this->check_capability_(CAP_TWO_PHASE_ADDR);
+  if (!two_phase && !this->check_develop_mode_("Address change (legacy single-phase)")) {
     return;
   }
-  delay(10);
 
-  if (!this->write_u8_(REG_COMMAND, CMD_SAVE_GAINS)) {
-    ESP_LOGW(TAG, "CMD_SAVE_GAINS failed; address change incomplete");
-    return;
+  if (two_phase) {
+    ESP_LOGCONFIG(TAG, "  Using v1.3 two-phase commit (production-OK)");
+
+    if (!this->write_u8_(REG_I2C_ADDRESS, new_addr)) {
+      ESP_LOGW(TAG, "Stage write of REG_I2C_ADDRESS failed; keeping 0x%02X", this->address_);
+      return;
+    }
+    delay(10);
+    if (!this->write_u8_(REG_ADDR_COMMIT_MAGIC, ADDR_COMMIT_MAGIC_VAL)) {
+      ESP_LOGW(TAG, "Arm write of REG_ADDR_COMMIT_MAGIC failed");
+      return;
+    }
+    delay(10);
+    if (!this->write_u8_(REG_COMMAND, CMD_COMMIT_ADDR)) {
+      ESP_LOGW(TAG, "CMD_COMMIT_ADDR failed; address change incomplete");
+      return;
+    }
+    App.feed_wdt();
+    delay(SETTLE_MS_COMMIT_ADDR);
+    App.feed_wdt();
+  } else {
+    ESP_LOGCONFIG(TAG, "  Using legacy single-phase commit (requires factory mode)");
+    if (!this->write_u8_(REG_I2C_ADDRESS, new_addr)) {
+      ESP_LOGW(TAG, "Write of REG_I2C_ADDRESS failed; keeping 0x%02X", this->address_);
+      return;
+    }
+    delay(10);
+    if (!this->save_user_config_()) {
+      ESP_LOGW(TAG, "Save failed; address change incomplete");
+      return;
+    }
+    // CMD_RESET — chip reboots on new_addr. We do not check the write result
+    // because the slave may NACK the ACK if RESET fires before the bus cycle
+    // completes.
+    this->write_u8_(REG_COMMAND, CMD_RESET);
+    delay(SETTLE_MS_RESET);
+    App.feed_wdt();
   }
-  // Feed watchdog around long flash + reset delays — IP-009 audit hardening
-  // against future ESPHome setup()-timeout tightening (2026-05-28).
-  App.feed_wdt();
-  delay(700);  // flash erase + write window
-  App.feed_wdt();
-
-  // CMD_RESET — chip reboots on new_addr. We do not check the write result
-  // because the slave may NACK the ACK if RESET fires before the bus cycle
-  // completes.
-  this->write_u8_(REG_COMMAND, CMD_RESET);
-  delay(300);  // boot time + AC frequency lock + first 200 ms RT window
-  App.feed_wdt();
 
   // From now on, all I2C ops use the new address.
   this->set_i2c_address(new_addr);
@@ -468,39 +806,54 @@ void RbAmpComponent::start_latch_phase_() {
 void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
   // Validity check — if the chip latched onto an empty accumulator (e.g. boot
   // warm-up not yet finished, or NACK race during flash write), discard.
+  // REG_PERIOD_VALID is a level flag (NOT cleared-on-read) — bit0 = 1 means
+  // the most recent latch produced fresh data; 0 means the chip's accumulator
+  // was empty at latch time. Single shared bit across channels (no per-channel
+  // validity flag in the wire contract).
   uint8_t valid = 0;
   if (!this->read_u8_(REG_PERIOD_VALID, &valid) || (valid & 0x01) == 0) {
     ESP_LOGD(TAG, "Period snapshot not yet valid; keeping previous integration window");
     return;
   }
 
-  // First successful LATCH after boot: prime the clock, do NOT integrate.
-  // Subsequent calls integrate over t_latch - last_latch_ms_ (unsigned wrap
-  // arithmetic — works correctly across the 49-day millis() rollover).
-  if (!this->primed_) {
-    this->last_latch_ms_ = t_latch;
-    this->primed_ = true;
-    return;
-  }
-  uint32_t dt_ms = t_latch - this->last_latch_ms_;
-  if (dt_ms == 0) {
-    return;  // pathological — no elapsed time between latches
-  }
-  double dt_s = dt_ms / 1000.0;
-
   static constexpr uint8_t AVG_P_ADDR[3] = {
       REG_PERIOD_AVG_P0, REG_PERIOD_AVG_P1, REG_PERIOD_AVG_P2,
   };
-  // Read all channels first; only commit last_latch_ms_ if every active
-  // channel succeeded (otherwise next cycle should still cover this period).
-  bool all_ok = true;
+  // Per-channel state (rbamp.h::primed_[ch] / last_latch_ms_[ch]) lets healthy
+  // channels keep integrating when one channel's CT clock-stretches beyond
+  // timeout. UI3 mixed-CT (small SCT + large SCT + WCT) is the canonical case:
+  // a single per-CT glitch must not freeze energy on the other two.
+  //
+  // L9 anti-revert: dt_s comes from MASTER wall-clock (millis() captured at
+  // start_latch_phase_), NOT from REG_PERIOD_LATCH_MS (0xEC) nor REG_PERIOD_MS_FW
+  // (0xCA). Chip SysTick starves under interrupt load → those values under-
+  // count by ~26% (HW-validated). Future porters reading this code: do NOT
+  // switch to chip-period — see rbamp_const.h L9 note and
+  // libs/esp_idf/components/rbamp/include/rbamp_energy.h for the canonical
+  // rationale (anti-revert doc baked into the upstream header @param period_ms).
+  bool any_integrated = false;
   for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
     float avg_p = 0.0f;
-    if (!this->read_float_le_(AVG_P_ADDR[ch], &avg_p)) {
-      ESP_LOGW(TAG, "Failed to read PERIOD_AVG_P[%u] at 0x%02X", ch, AVG_P_ADDR[ch]);
-      all_ok = false;
+    if (!this->read_float_le_(AVG_P_ADDR[ch], &avg_p) || !sanity_power_(avg_p)) {
+      ESP_LOGW(TAG, "Failed to read or validate PERIOD_AVG_P[%u] at 0x%02X — channel %u stays at previous integration window",
+               ch, AVG_P_ADDR[ch], ch);
+      continue;  // skip ch — next cycle's dt spans the gap
+    }
+
+    // First successful read for this channel after boot: prime the clock,
+    // do NOT integrate (no prior dt anchor).
+    if (!this->primed_[ch]) {
+      this->last_latch_ms_[ch] = t_latch;
+      this->primed_[ch] = true;
       continue;
     }
+
+    uint32_t dt_ms = t_latch - this->last_latch_ms_[ch];
+    if (dt_ms == 0) {
+      continue;  // pathological — same-instant retry
+    }
+    double dt_s = dt_ms / 1000.0;
+
     this->energy_total_wh_[ch] += (double) avg_p * dt_s / 3600.0;
     if (this->energy_[ch] != nullptr) {
       this->energy_[ch]->publish_state((float) this->energy_total_wh_[ch]);
@@ -508,30 +861,26 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
 
     if (this->bidirectional_ && REG_PERIOD_AVG_P_NEG[ch] != 0xFF) {
       float avg_p_neg = 0.0f;
-      if (this->read_float_le_(REG_PERIOD_AVG_P_NEG[ch], &avg_p_neg)) {
+      if (this->read_float_le_(REG_PERIOD_AVG_P_NEG[ch], &avg_p_neg) && sanity_power_(avg_p_neg)) {
         this->energy_export_wh_[ch] += (double) avg_p_neg * dt_s / 3600.0;
         if (this->energy_exported_[ch] != nullptr) {
           this->energy_exported_[ch]->publish_state((float) this->energy_export_wh_[ch]);
         }
       }
     }
+
+    this->last_latch_ms_[ch] = t_latch;
+    any_integrated = true;
   }
 
-  if (all_ok) {
-    this->last_latch_ms_ = t_latch;
-
-    // Throttled NVS save — flash wear budget. NVS sector erase ~10 ms;
-    // saving every 5 min gives ~100k writes/year per device, well inside
-    // ESP32 NVS wear-leveling reserves. Worst-case data loss on unexpected
-    // power cut = up to SAVE_INTERVAL_MS of energy (~5 Wh at 60 W average).
-    if (this->last_save_ms_ == 0
-        || (t_latch - this->last_save_ms_) >= SAVE_INTERVAL_MS) {
-      this->save_prefs_();
-    }
+  // Throttled NVS save — flash wear budget. NVS sector erase ~10 ms; saving
+  // every 5 min gives ~100k writes/year per device, well inside ESP32 NVS
+  // wear-leveling reserves. Save only when at least one channel integrated
+  // this cycle (avoid burning NVS writes on all-channels-failed cycles).
+  if (any_integrated && (this->last_save_ms_ == 0
+      || (t_latch - this->last_save_ms_) >= SAVE_INTERVAL_MS)) {
+    this->save_prefs_();
   }
-  // else: leave last_latch_ms_ at previous successful latch; next cycle's dt
-  // will span the missed window and recover (assumes load is roughly stable
-  // across the gap — a known small inaccuracy).
 }
 
 // ============================================================================
@@ -598,6 +947,14 @@ void RbAmpComponent::setup() {
   if (any_per_channel) {
     this->apply_ct_models_per_channel_();
   }
+  // Fleet config (REG_FLEET_CONFIG.bit0 + REG_GROUP_ID) — written before
+  // address change because the device reset triggered by apply_fleet_config_
+  // would otherwise come between the fleet writes and apply_address_change_'s
+  // own reset. Both fleet config and address change require flash + reset;
+  // separating them is cleaner than coalescing (~1.4 s additional boot time
+  // on a fleet-config + address-change cycle, but YAML changes happen
+  // rarely).
+  this->apply_fleet_config_();
   if (this->new_addr_request_ != 0) {
     this->apply_address_change_();
   }
@@ -641,13 +998,13 @@ void RbAmpComponent::publish_rt_block_() {
   float u_rms_now = 0.0f;
   bool u_rms_ok = false;
   if (this->has_voltage_) {
-    if (this->read_float_le_(REG_U_RMS, &u_rms_now)) {
+    if (this->read_float_le_(REG_U_RMS, &u_rms_now) && sanity_voltage_(u_rms_now)) {
       u_rms_ok = true;
       if (this->voltage_[0] != nullptr) {
         this->voltage_[0]->publish_state(u_rms_now);
       }
     } else {
-      ESP_LOGW(TAG, "Failed to read U_rms at 0x%02X", REG_U_RMS);
+      ESP_LOGW(TAG, "Failed to read or validate U_rms at 0x%02X", REG_U_RMS);
     }
   }
 
@@ -660,7 +1017,7 @@ void RbAmpComponent::publish_rt_block_() {
   bool i_rms_ch0_ok = false;
   for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
     float i_rms = 0.0f;
-    if (this->read_float_le_(I_RMS_ADDR[ch], &i_rms)) {
+    if (this->read_float_le_(I_RMS_ADDR[ch], &i_rms) && sanity_current_(i_rms)) {
       if (this->current_[ch] != nullptr) {
         this->current_[ch]->publish_state(i_rms);
       }
@@ -673,19 +1030,19 @@ void RbAmpComponent::publish_rt_block_() {
     if (this->has_voltage_) {
       // P/PF/Q only meaningful when voltage is sampled
       float p_real = 0.0f;
-      if (this->read_float_le_(P_REAL_ADDR[ch], &p_real)
+      if (this->read_float_le_(P_REAL_ADDR[ch], &p_real) && sanity_power_(p_real)
           && this->power_[ch] != nullptr) {
         this->power_[ch]->publish_state(p_real);
       }
 
       float pf = 0.0f;
-      if (this->read_float_le_(PF_ADDR[ch], &pf)
+      if (this->read_float_le_(PF_ADDR[ch], &pf) && sanity_pf_(pf)
           && this->pf_[ch] != nullptr) {
         this->pf_[ch]->publish_state(pf);
       }
 
       float q = 0.0f;
-      if (this->read_float_le_(Q_ADDR[ch], &q)
+      if (this->read_float_le_(Q_ADDR[ch], &q) && sanity_power_(q)
           && this->reactive_power_[ch] != nullptr) {
         this->reactive_power_[ch]->publish_state(q);
       }
@@ -694,10 +1051,11 @@ void RbAmpComponent::publish_rt_block_() {
 
   if (this->frequency_ != nullptr) {
     uint8_t freq = 0;
-    // Only publish when the device has locked onto mains (50 Hz EU / 60 Hz US).
-    // freq == 0 means "no zero-cross detected yet" and would be a misleading
-    // value in HA. Other values would also be implausible — discard.
-    if (this->read_u8_(REG_AC_FREQ, &freq) && (freq == 50 || freq == 60)) {
+    // Only publish when the device has locked onto mains. sanity_freq_ allows
+    // 40-70 Hz to cover both EU (50) and US (60) plus reasonable hold-around
+    // for inverter-fed mains; freq == 0 means "no zero-cross detected yet"
+    // (rejected by sanity_freq_).
+    if (this->read_u8_(REG_AC_FREQ, &freq) && sanity_freq_(freq)) {
       this->frequency_->publish_state(freq);
     }
   }
@@ -734,6 +1092,24 @@ void RbAmpComponent::dump_config() {
   }
   ESP_LOGCONFIG(TAG, "  Bidirectional: %s", YESNO(this->bidirectional_));
   ESP_LOGCONFIG(TAG, "  Broadcast LATCH: %s", YESNO(this->broadcast_latch_));
+  if (this->capability_cached_) {
+    ESP_LOGCONFIG(TAG, "  CAPABILITY bitmap: 0x%04X (GC=%s GROUP_FILTER=%s "
+                  "DIGEST=%s EVENTS=%s TWO_PHASE_ADDR=%s SAVE_USER_CONFIG=%s)",
+                  this->cached_capability_,
+                  YESNO((this->cached_capability_ & CAP_GC_LATCH) != 0),
+                  YESNO((this->cached_capability_ & CAP_GC_GROUP_FILTER) != 0),
+                  YESNO((this->cached_capability_ & CAP_DIGEST) != 0),
+                  YESNO((this->cached_capability_ & CAP_EVENTS) != 0),
+                  YESNO((this->cached_capability_ & CAP_TWO_PHASE_ADDR) != 0),
+                  YESNO((this->cached_capability_ & CAP_SAVE_USER_CONFIG) != 0));
+  }
+  if (this->fleet_gc_enable_request_ != 0xFF) {
+    ESP_LOGCONFIG(TAG, "  Fleet GC enable requested: %s",
+                  YESNO(this->fleet_gc_enable_request_ != 0));
+  }
+  if (this->group_id_request_valid_) {
+    ESP_LOGCONFIG(TAG, "  Group ID requested: 0x%02X", this->group_id_request_);
+  }
   ESP_LOGCONFIG(TAG, "  Wh persistence: NVS every %us", SAVE_INTERVAL_MS / 1000);
   if (this->drdy_pin_ != nullptr) {
     LOG_PIN("  DRDY pin: ", this->drdy_pin_);

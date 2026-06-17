@@ -1,21 +1,14 @@
-# ESPHome build artifacts
-.esphome/
-**/.esphome/
-
-# Python bytecode
-__pycache__/
-**/__pycache__/
-*.py[cod]
-
-# Operator-local bench configs (operator credentials, lab-specific YAML)
+# Operator-local files (creds, bench-specific configs)
 secrets.yaml
 bench-*.yaml
-**/bench-*.yaml
 
-# Editor / OS
+# ESPHome build outputs
+.esphome/
+__pycache__/
+*.py[cod]
+
+# Editor / OS noise
 .vscode/
 .idea/
-*.swp
-*~
 .DS_Store
 Thumbs.db

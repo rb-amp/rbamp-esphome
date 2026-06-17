@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/preferences.h"
@@ -43,6 +45,38 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void set_broadcast_latch(bool b) { broadcast_latch_ = b; }
   void set_address_change_request(uint8_t new_addr) { new_addr_request_ = new_addr; }
   void set_topology(uint8_t t) { topology_hint_ = static_cast<Topology>(t); }
+
+  // v1.3 fleet / multi-module configuration
+  void set_fleet_gc_enable(bool b) { fleet_gc_enable_request_ = b ? 1 : 0; }
+  void set_group_id(uint8_t g) { group_id_request_ = g; group_id_request_valid_ = true; }
+
+  // GC broadcast LATCH — public API (callable from YAML lambda / service in
+  // multi-module deployments where one instance acts as bus coordinator).
+  // Transmits 5-byte canonical frame `A5 27 <group> <tick_lo> <tick_hi>` to
+  // I²C address 0x00 (general call). Returns true on bus write success;
+  // does NOT verify slave uptake — call gc_witness_check_() after the
+  // SETTLE_MS_LATCH_PERIOD + 300 ms settle to verify uptake via PERIOD_VALID.
+  // Pre-conditions (logged + skipped if violated):
+  //   - REG_CAPABILITY bit CAP_GC_LATCH set on at least one expected slave
+  //   - REG_FLEET_CONFIG.bit0 set device-side (call apply_fleet_config_ once)
+  bool transmit_gc_frame();
+
+  // Read-back: returns the last GC tick this instance saw (from REG_GC_TICK).
+  // 0xFFFF = never received. Useful for fleet-side correlation in HA.
+  uint16_t read_gc_tick_received();
+
+  // S5 bench-test helpers — public read accessors for identity/diagnostic
+  // surfaces, callable from YAML lambda. Each does a fresh read at call time.
+  uint8_t get_firmware_version() const { return firmware_version_; }
+  uint16_t get_capability_cached() const { return cached_capability_; }
+  std::string get_variant_str();           // REG_HW_VARIANT → "UI1"/"UI2"/"UI3"/"I1"/"I2"/"I3"/"UNK"
+  std::string get_capability_hex();        // "0x0FF"
+  std::string get_uid_hex();               // 96-bit hex
+  std::string get_last_error_str();        // REG_ERROR decoded
+  uint8_t get_event_flags();               // REG_EVENT_FLAGS u8 (caller masks bits)
+  bool write_clear_error();                // CMD_CLEAR_ERROR opcode
+  bool write_reset();                      // CMD_RESET opcode
+  bool fleet_apply_now();                  // re-run apply_fleet_config_ (from service)
 
   // Sensor setters — single-phase topology fields
   void set_voltage_sensor(sensor::Sensor *s) { voltage_[0] = s; }
@@ -106,11 +140,26 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void apply_ct_model_();
   void apply_ct_models_per_channel_();
   void apply_address_change_();
+  void apply_fleet_config_();
+  bool check_capability_(uint16_t bit);
+  bool gc_witness_check_();
   void start_latch_phase_();
   void finish_latch_phase_(uint32_t t_latch);
   void publish_rt_block_();
   void load_prefs_();
   void save_prefs_();
+  // S4: capability-gated CMD_SAVE_USER_CONFIG (v1.3) vs CMD_SAVE_GAINS (legacy)
+  // selector. Picks the v1.3 opcode when CAP_SAVE_USER_CONFIG is advertised,
+  // falls back to SAVE_GAINS otherwise. All settle to 700 ms either way.
+  bool save_user_config_();
+  // S4: per-quantity sanity bounds. Replaces the blanket |val|<10000 cap with
+  // per-physical-quantity limits that pass through brownouts (U=0V) and
+  // off-grid scenarios while still rejecting IDF buffer-leak ghost bytes.
+  static bool sanity_voltage_(float v) { return std::isfinite(v) && v >= 0.0f && v <= 500.0f; }
+  static bool sanity_current_(float i) { return std::isfinite(i) && i >= 0.0f && i <= 200.0f; }
+  static bool sanity_power_(float p) { return std::isfinite(p) && p >= -50000.0f && p <= 50000.0f; }
+  static bool sanity_pf_(float f) { return std::isfinite(f) && f >= -1.0f && f <= 1.0f; }
+  static bool sanity_freq_(uint8_t f) { return f >= 40 && f <= 70; }
 
   // Configuration state
   GPIOPin *drdy_pin_{nullptr};
@@ -120,6 +169,18 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   bool bidirectional_{false};
   bool broadcast_latch_{false};
   uint8_t new_addr_request_{0};
+
+  // v1.3 fleet state. fleet_gc_enable_request_: 0=disabled, 1=enabled,
+  // 0xFF=not requested in YAML (skip apply_fleet_config_). group_id_request_:
+  // 0 by default (all-call); group_id_request_valid_ distinguishes "default 0"
+  // from "explicitly set to 0" so we only issue REG_GROUP_ID write when
+  // requested.
+  uint8_t fleet_gc_enable_request_{0xFF};
+  uint8_t group_id_request_{0};
+  bool group_id_request_valid_{false};
+  uint16_t gc_tick_counter_{0};            // monotonic tick allocator (per master instance)
+  uint16_t cached_capability_{0};          // cached REG_CAPABILITY u16, populated by detect_variant_
+  bool capability_cached_{false};
 
   // User-supplied hint (YAML `topology:` key). Current firmware has no in-band
   // way to report channel count, so this is informational unless/until a future
@@ -134,12 +195,16 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   bool has_voltage_{true};
   uint8_t firmware_version_{0};
 
-  // Master-side energy accumulators (master clock × avg_P_W / 3600 → Wh)
-  // `primed_` distinguishes "first cycle, prime the clock, do not integrate"
-  // from "subsequent cycle, integrate over t_now - last_latch_ms_". Using a
-  // bool sentinel instead of "last_latch_ms_ != 0" survives millis() wrap.
-  bool primed_{false};
-  uint32_t last_latch_ms_{0};
+  // Master-side energy accumulators (master clock × avg_P_W / 3600 → Wh).
+  // Per-channel `primed_[ch]` distinguishes "first cycle, prime the clock,
+  // do not integrate" from "subsequent cycle, integrate over t_now -
+  // last_latch_ms_[ch]". Using bool sentinels (not "last_latch_ms_[ch] != 0")
+  // survives the 49-day millis() wrap. Per-channel state is required for
+  // mixed-CT (UI3) partial-fail recovery: one channel's CT can clock-stretch
+  // beyond timeout independently of the others; healthy channels continue
+  // integrating without waiting on the unhealthy one.
+  bool primed_[3]{false, false, false};
+  uint32_t last_latch_ms_[3]{0, 0, 0};
   double energy_total_wh_[3]{0.0, 0.0, 0.0};
   double energy_export_wh_[3]{0.0, 0.0, 0.0};
 

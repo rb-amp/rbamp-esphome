@@ -1,0 +1,358 @@
+# tools/esphome-rbamp/tests/bench_v13.yaml
+#
+# Bench HW-validation harness for the v1.3 rbAmp ESPHome external component.
+# Drives the Fix-A fleet (UI1 @ 0x50, I2 @ 0x51, I3 @ 0x52) via the ESPHome
+# native API (port 6053) so standfw's Python driver (aioesphomeapi) can
+# orchestrate the validation matrix.
+#
+# Usage (operator-side):
+#   1. Drop `secrets.yaml` next to this file (gitignored) with:
+#        wifi_ssid: "..."
+#        wifi_password: "..."
+#   2. esphome compile tools/esphome-rbamp/tests/bench_v13.yaml
+#   3. Flash firmware.bin to ESP32 (esptool.py / usbipd via Windows)
+#   4. Confirm mDNS hostname `rbamp-bench-v13.local` reachable on the bench LAN
+#   5. standfw's driver connects over native API and runs the matrix
+#
+# Coordinate driver bind with standfw via the [V13-READY-FOR-BENCH] baton.
+
+esphome:
+  name: rbamp-bench-v13
+  friendly_name: "rbAmp v1.3 bench harness"
+  on_boot:
+    # Bench safety: fail-safe the PCF8574 load bank OFF at boot so flashing this
+    # firmware (or any reboot) de-energizes the 53Ω resistors. The load is only
+    # re-energized by an explicit rbamp_set_load call during a measurement step.
+    priority: -100
+    then:
+      - lambda: |-
+          uint8_t z = 0x00;
+          id(load_bus)->write(0x20, &z, 1);
+          id(load_bus)->write(0x25, &z, 1);
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  baud_rate: 115200
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:                        # fallback AP if home WiFi unreachable
+    ssid: "rbamp-bench fallback"
+    password: "bench1234"
+
+
+ota:
+  - platform: esphome
+    password: "bench-ota-v13"
+
+# ---------- I²C buses ----------
+i2c:
+  - id: dut_bus
+    sda: GPIO25
+    scl: GPIO26
+    frequency: 50kHz        # SPEC §B.5 NACK discipline
+    scan: false
+  - id: load_bus
+    sda: GPIO21
+    scl: GPIO22
+    frequency: 100kHz       # PCF8574 happy at 100k
+    scan: false
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+# ---------- rbAmp DUT instances ----------
+rbamp:
+  - id: dut_50
+    i2c_id: dut_bus
+    address: 0x50
+    update_interval: 1s
+    sensor_class: SCT_013
+    ct_model: SCT_013_030
+    topology: SINGLE
+  - id: dut_51
+    i2c_id: dut_bus
+    address: 0x51
+    update_interval: 1s
+    sensor_class: SCT_013
+    ct_models: [SCT_013_030, SCT_013_030]
+    topology: SINGLE
+  - id: dut_52
+    i2c_id: dut_bus
+    address: 0x52
+    update_interval: 1s
+    sensor_class: SCT_013
+    ct_models: [SCT_013_030, SCT_013_030, SCT_013_030]
+    topology: SINGLE
+
+# ---------- Per-module sensors ----------
+sensor:
+  - platform: rbamp
+    rbamp_id: dut_50
+    voltage:        { name: "DUT_50 voltage" }
+    current:        { name: "DUT_50 current ch0" }
+    power:          { name: "DUT_50 power ch0" }
+    power_factor:   { name: "DUT_50 PF ch0" }
+    energy:         { name: "DUT_50 energy ch0" }
+    frequency:      { name: "DUT_50 freq" }
+  - platform: rbamp
+    rbamp_id: dut_51
+    voltage:        { name: "DUT_51 voltage" }
+    current:        { name: "DUT_51 current ch0" }
+    current_1:      { name: "DUT_51 current ch1" }
+    power:          { name: "DUT_51 power ch0" }
+    power_1:        { name: "DUT_51 power ch1" }
+    power_factor:   { name: "DUT_51 PF ch0" }
+    power_factor_1: { name: "DUT_51 PF ch1" }
+    energy:         { name: "DUT_51 energy ch0" }
+    energy_1:       { name: "DUT_51 energy ch1" }
+    frequency:      { name: "DUT_51 freq" }
+  - platform: rbamp
+    rbamp_id: dut_52
+    voltage:        { name: "DUT_52 voltage" }
+    current:        { name: "DUT_52 current ch0" }
+    current_1:      { name: "DUT_52 current ch1" }
+    current_2:      { name: "DUT_52 current ch2" }
+    power:          { name: "DUT_52 power ch0" }
+    power_1:        { name: "DUT_52 power ch1" }
+    power_2:        { name: "DUT_52 power ch2" }
+    power_factor:   { name: "DUT_52 PF ch0" }
+    power_factor_1: { name: "DUT_52 PF ch1" }
+    power_factor_2: { name: "DUT_52 PF ch2" }
+    energy:         { name: "DUT_52 energy ch0" }
+    energy_1:       { name: "DUT_52 energy ch1" }
+    energy_2:       { name: "DUT_52 energy ch2" }
+    frequency:      { name: "DUT_52 freq" }
+
+# ---------- Identity / diagnostic text_sensors (one set per DUT) ----------
+text_sensor:
+  - platform: template
+    id: raw_read_result
+    name: "raw_read_result"
+    icon: mdi:console-line
+    update_interval: never        # only populated by rbamp_raw_read service
+  - platform: template
+    id: scan_result
+    name: "scan_result"
+    update_interval: never
+
+  - platform: template
+    name: "DUT_50 variant"
+    update_interval: 30s
+    lambda: 'return id(dut_50).get_variant_str();'
+  - platform: template
+    name: "DUT_50 capability"
+    update_interval: 30s
+    lambda: 'return id(dut_50).get_capability_hex();'
+  - platform: template
+    name: "DUT_50 uid"
+    update_interval: 30s
+    lambda: 'return id(dut_50).get_uid_hex();'
+  - platform: template
+    name: "DUT_50 fw_version"
+    update_interval: 30s
+    lambda: |-
+      char buf[8];
+      snprintf(buf, sizeof(buf), "0x%02X", id(dut_50).get_firmware_version());
+      return std::string(buf);
+  - platform: template
+    name: "DUT_50 last_error"
+    update_interval: 30s
+    lambda: 'return id(dut_50).get_last_error_str();'
+
+  - platform: template
+    name: "DUT_51 variant"
+    update_interval: 30s
+    lambda: 'return id(dut_51).get_variant_str();'
+  - platform: template
+    name: "DUT_51 capability"
+    update_interval: 30s
+    lambda: 'return id(dut_51).get_capability_hex();'
+  - platform: template
+    name: "DUT_51 uid"
+    update_interval: 30s
+    lambda: 'return id(dut_51).get_uid_hex();'
+  - platform: template
+    name: "DUT_51 last_error"
+    update_interval: 30s
+    lambda: 'return id(dut_51).get_last_error_str();'
+
+  - platform: template
+    name: "DUT_52 variant"
+    update_interval: 30s
+    lambda: 'return id(dut_52).get_variant_str();'
+  - platform: template
+    name: "DUT_52 capability"
+    update_interval: 30s
+    lambda: 'return id(dut_52).get_capability_hex();'
+  - platform: template
+    name: "DUT_52 uid"
+    update_interval: 30s
+    lambda: 'return id(dut_52).get_uid_hex();'
+  - platform: template
+    name: "DUT_52 last_error"
+    update_interval: 30s
+    lambda: 'return id(dut_52).get_last_error_str();'
+
+# ---------- API services (drivable by standfw's aioesphomeapi client) ----------
+api:
+  port: 6053
+  services:
+    # ---- 1. Ground-truth raw register read ----
+    - service: rbamp_raw_read
+      variables:
+        addr: int
+        reg:  int
+        len:  int
+      then:
+        - lambda: |-
+            uint8_t buf[32];
+            uint8_t n = static_cast<uint8_t>(std::min<int>(len, 32));
+            uint8_t reg_byte = static_cast<uint8_t>(reg & 0xFF);
+            uint8_t addr_byte = static_cast<uint8_t>(addr & 0x7F);
+            auto err = id(dut_bus)->write(addr_byte, &reg_byte, 1, false);  // no stop
+            if (err != esphome::i2c::ERROR_OK) {
+              id(raw_read_result).publish_state(std::string("ERROR_W:") + std::to_string(static_cast<int>(err)));
+              return;
+            }
+            err = id(dut_bus)->read(addr_byte, buf, n);
+            if (err != esphome::i2c::ERROR_OK) {
+              id(raw_read_result).publish_state(std::string("ERROR_R:") + std::to_string(static_cast<int>(err)));
+              return;
+            }
+            char hex[3 * 32 + 1] = {0};
+            int p = 0;
+            for (uint8_t i = 0; i < n; i++) {
+              p += snprintf(hex + p, sizeof(hex) - p, "%02X ", buf[i]);
+            }
+            id(raw_read_result).publish_state(std::string(hex));
+
+    # ---- 2. Load bank control ----
+    - service: rbamp_set_load
+      variables:
+        coarse: int
+        fine:   int
+      then:
+        - lambda: |-
+            uint8_t c = static_cast<uint8_t>(coarse & 0xFF);
+            uint8_t f = static_cast<uint8_t>(fine & 0xFF);
+            id(load_bus)->write(0x20, &c, 1);
+            id(load_bus)->write(0x25, &f, 1);
+
+    # ---- 3. Bus scan ----
+    - service: rbamp_scan
+      then:
+        - lambda: |-
+            char buf[256] = {0};
+            int p = 0;
+            for (uint8_t a = 0x08; a <= 0x77 && p < 250; a++) {
+              uint8_t dummy;
+              auto err = id(dut_bus)->read(a, &dummy, 1);
+              if (err == esphome::i2c::ERROR_OK) {
+                p += snprintf(buf + p, sizeof(buf) - p, "%02X ", a);
+              }
+            }
+            id(scan_result).publish_state(std::string(buf));
+
+    # ---- 4. Clear error / reset / fleet apply (per-instance dispatch by addr) ----
+    - service: rbamp_clear_error
+      variables: { addr: int }
+      then:
+        - lambda: |-
+            if (addr == 0x50) id(dut_50).write_clear_error();
+            else if (addr == 0x51) id(dut_51).write_clear_error();
+            else if (addr == 0x52) id(dut_52).write_clear_error();
+
+    - service: rbamp_reset
+      variables: { addr: int }
+      then:
+        - lambda: |-
+            if (addr == 0x50) id(dut_50).write_reset();
+            else if (addr == 0x51) id(dut_51).write_reset();
+            else if (addr == 0x52) id(dut_52).write_reset();
+
+    - service: rbamp_gc_latch
+      variables: { addr: int }
+      then:
+        - lambda: |-
+            // Any of the three can emit (they share the bus; only one need send)
+            if (addr == 0x50) id(dut_50).transmit_gc_frame();
+            else if (addr == 0x51) id(dut_51).transmit_gc_frame();
+            else if (addr == 0x52) id(dut_52).transmit_gc_frame();
+
+    - service: rbamp_check_sync
+      then:
+        - lambda: |-
+            // Read REG_GC_TICK from each module, log the spread for standfw to assess
+            uint16_t t0 = id(dut_50).read_gc_tick_received();
+            uint16_t t1 = id(dut_51).read_gc_tick_received();
+            uint16_t t2 = id(dut_52).read_gc_tick_received();
+            char buf[64];
+            snprintf(buf, sizeof(buf), "t50=%u t51=%u t52=%u", t0, t1, t2);
+            id(raw_read_result).publish_state(std::string("SYNC:") + buf);
+
+    # ---- 5. Configuration writes (one service per DUT — simplest dispatch) ----
+    # Note: writes to apply_* require RbAmpComponent's request state machine; for
+    # bench we use raw_write via the bus + standfw orchestrates per the canon
+    # sequence. The configure_channels / set_ct_model / set_sensor_class
+    # entry points below take the raw path for parametrization flexibility.
+
+    - service: rbamp_set_ct_model
+      variables:
+        addr: int
+        ch:   int          # 0..2
+        code: int          # 1..7
+      then:
+        - lambda: |-
+            uint8_t a = static_cast<uint8_t>(addr & 0x7F);
+            uint8_t c = static_cast<uint8_t>(code & 0xFF);
+            uint8_t set_op = 0x28 + static_cast<uint8_t>(ch & 0x03);  // CMD_SET_CT_MODEL_CHn
+            uint8_t save_op = 0x32;                                    // CMD_SAVE_USER_CONFIG
+            // Canon: REG_CT_MODEL=code (reg 0x05) → opcode → 5ms → SAVE
+            uint8_t buf2[2] = {0x05, c};                  // reg 0x05 = code
+            id(dut_bus)->write(a, buf2, 2);
+            uint8_t buf3[2] = {0x01, set_op};             // REG_COMMAND = CMD_SET_CT_MODEL_CHn
+            id(dut_bus)->write(a, buf3, 2);
+            esphome::delay(5);
+            uint8_t buf4[2] = {0x01, save_op};            // REG_COMMAND = CMD_SAVE_USER_CONFIG
+            id(dut_bus)->write(a, buf4, 2);
+            esphome::delay(700);
+
+    - service: rbamp_set_sensor_class
+      variables: { addr: int, cls: int }
+      then:
+        - lambda: |-
+            uint8_t a = static_cast<uint8_t>(addr & 0x7F);
+            uint8_t buf2[2] = {0x25, static_cast<uint8_t>(cls & 0xFF)};
+            id(dut_bus)->write(a, buf2, 2);
+            uint8_t buf3[2] = {0x01, 0x32};               // CMD_SAVE_USER_CONFIG
+            id(dut_bus)->write(a, buf3, 2);
+            esphome::delay(700);
+
+    - service: rbamp_assign_address
+      variables: { addr: int, new_addr: int }
+      then:
+        - lambda: |-
+            uint8_t a = static_cast<uint8_t>(addr & 0x7F);
+            uint8_t n = static_cast<uint8_t>(new_addr & 0x7F);
+            // Two-phase commit canon: REG_I2C_ADDRESS=new → REG_ADDR_COMMIT_MAGIC=0xA5 → CMD_COMMIT_ADDR → 700ms
+            uint8_t buf2[2] = {0x30, n};
+            id(dut_bus)->write(a, buf2, 2);
+            esphome::delay(10);
+            uint8_t buf3[2] = {0x31, 0xA5};
+            id(dut_bus)->write(a, buf3, 2);
+            esphome::delay(10);
+            uint8_t buf4[2] = {0x01, 0x30};               // CMD_COMMIT_ADDR
+            id(dut_bus)->write(a, buf4, 2);
+            esphome::delay(700);
+
+mdns:
+  disabled: false
