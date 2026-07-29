@@ -107,6 +107,33 @@ rbamp:
 
 ---
 
+### `latch_interval`
+
+| Attribute | Value |
+|---|---|
+| Type | `time` (ESPHome duration string) |
+| Default | Same as `update_interval` |
+| Required | No |
+| Since | v1.4 |
+
+How often the component sends the LATCH command and integrates a Wh sample. When set, decouples the LATCH cycle from the RT-read cadence — `update_interval:` continues to control how often V/I/P/PF/Q registers are read and published, while `latch_interval:` controls how often the period accumulator is snapshotted and Wh is integrated.
+
+Wh accuracy is preserved regardless of the ratio: master-side integration uses actual wall-clock dt between successive LATCH events, so longer LATCH intervals just produce coarser (and still correct) integration steps.
+
+Must be `>= update_interval` (setting it shorter is rejected at config validation — the extra LATCHes would produce no observable data).
+
+When unset, LATCH runs on every `update()` call (v1.3 single-cadence behaviour, backwards-compatible).
+
+```yaml
+rbamp:
+  update_interval: 3s        # RT V/I/P/PF refreshed every 3 s
+  latch_interval: 60s        # LATCH + Wh integration once a minute
+```
+
+Useful when bus load or master-side CPU competition matters — multi-module fleets, ESP8266 hosts (single-core; WiFi ISRs compete for CPU during I²C transactions), or shared I²C buses with other devices.
+
+---
+
 ### `drdy_pin`
 
 | Attribute | Value |

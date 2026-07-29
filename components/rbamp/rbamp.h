@@ -50,6 +50,13 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void set_fleet_gc_enable(bool b) { fleet_gc_enable_request_ = b ? 1 : 0; }
   void set_group_id(uint8_t g) { group_id_request_ = g; group_id_request_valid_ = true; }
 
+  // v1.4 — LATCH cadence decoupled from RT-read cadence. When set (>0), the
+  // component only sends CMD_LATCH_PERIOD every `latch_interval_ms` while
+  // still reading the RT block every `update_interval` (V/I/P/PF/Q refresh
+  // stays fast, Wh integration + period reads slow down). When 0 (unset in
+  // YAML), the v1.3 single-cadence behaviour applies (LATCH each update()).
+  void set_latch_interval_ms(uint32_t ms) { latch_interval_ms_ = ms; }
+
   // GC broadcast LATCH — public API (callable from YAML lambda / service in
   // multi-module deployments where one instance acts as bus coordinator).
   // Transmits 5-byte canonical frame `A5 27 <group> <tick_lo> <tick_hi>` to
@@ -181,6 +188,14 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   uint16_t gc_tick_counter_{0};            // monotonic tick allocator (per master instance)
   uint16_t cached_capability_{0};          // cached REG_CAPABILITY u16, populated by detect_variant_
   bool capability_cached_{false};
+
+  // v1.4 LATCH cadence decoupling. 0 = use PollingComponent::get_update_interval()
+  // (v1.3 single-cadence behaviour). Positive = LATCH-only cadence in ms;
+  // RT-block reads stay at update_interval. `last_latch_wall_ms_` tracks the
+  // last completed LATCH tick for gating (separate from per-channel
+  // `last_latch_ms_[ch]` which is the Wh-integration dt base).
+  uint32_t latch_interval_ms_{0};
+  uint32_t last_latch_wall_ms_{0};
 
   // User-supplied hint (YAML `topology:` key). Current firmware has no in-band
   // way to report channel count, so this is informational unless/until a future

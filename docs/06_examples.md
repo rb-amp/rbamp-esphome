@@ -956,6 +956,34 @@ integrity at 50 kHz. Cut the pull-up solder jumpers on modules #2 and #3 (leave
 them only on #1, or place a single external 4.7 kΩ pair next to the ESP32). For
 more, see [04_hardware.md](04_hardware.md), the section on the multi-module bus.
 
+### Advanced: decoupled LATCH cadence for multi-module fleets *(v1.4+)*
+
+Fleet installations pay the LATCH-cycle cost per module per cycle: on a 3-module bus polling at `update_interval: 10s`, that's 3× the LATCH write + 3× the 50 ms settle window every 10 s — plus the RT-block reads on top. On ESP8266 hosts (single core; WiFi ISRs compete for CPU during I²C transactions) or shared I²C buses hosting other devices, that overhead becomes visible as WiFi glitches or stale readings on non-rbAmp entities.
+
+`latch_interval:` (available since v1.4) decouples the two cadences: RT-block reads (V/I/P/PF/Q) stay at `update_interval:` — the reader still sees fresh values on the dashboard — while the LATCH → snapshot → Wh integration only runs every `latch_interval:`. Wh accuracy is preserved: master-side integration uses actual wall-clock dt between LATCH events, so a 60 s LATCH interval just produces 60 s-wide (and still correct) integration steps.
+
+```yaml
+rbamp:
+  - id: mod_mains
+    address: 0x50
+    update_interval: 10s     # dashboard: fresh V/I/P/PF every 10 s
+    latch_interval: 60s      # bus: LATCH + Wh integration once a minute
+    ct_models: [SCT_013_050, SCT_013_030, SCT_013_030]
+    fleet_gc_enable: true
+    group_id: 1
+  - id: mod_branches
+    address: 0x51
+    update_interval: 10s
+    latch_interval: 60s
+    ct_models: [SCT_013_005, SCT_013_030, SCT_013_050]
+    fleet_gc_enable: true
+    group_id: 1
+```
+
+Bus-load reduction vs the same fleet without `latch_interval:`: at `update_interval: 10s`, each module contributes ~15 ms of RT read + ~65 ms of LATCH+settle per cycle → ~80 ms per module per cycle. With `latch_interval: 60s`, the LATCH+settle fires only once a minute → RT reads stay cheap every 10 s + one short LATCH burst every 60 s, roughly a 3× lower average bus duty. Larger fleets see proportionally larger savings.
+
+When to omit `latch_interval:`: single-module deployments on ESP32 hosts where the baseline duty isn't costing anything — the v1.3 single-cadence default is simpler and equally correct.
+
 ---
 
 ## 9 · One-time I²C address change (0x50 → 0x51)

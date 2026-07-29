@@ -974,12 +974,28 @@ void RbAmpComponent::update() {
     return;
   }
 
-  // --- Period metering ---
+  // --- Period metering (LATCH cadence) ---
   // Master-side integration: E_Wh[ch] += avg_p_W[ch] × master_dt_s / 3600.
   // start_latch_phase_() issues the LATCH and schedules a non-blocking
   // 50 ms timeout to read the snapshot — the rest of update() proceeds
   // immediately so the cooperative scheduler is not starved.
-  this->start_latch_phase_();
+  //
+  // v1.4: gate LATCH on `latch_interval_ms_` if the user set it (else fall
+  // back to per-update() LATCH, v1.3 behaviour). RT-block read below is
+  // NOT gated — it runs every update() regardless, so V/I/P/PF/Q stay fresh
+  // even when LATCH is slow. Wh integration remains correct because
+  // finish_latch_phase_ uses the actual wall-clock dt (last_latch_ms_[ch])
+  // — long LATCH intervals just mean coarser integration windows, not lost
+  // energy.
+  const uint32_t now = millis();
+  const uint32_t latch_gate = this->latch_interval_ms_ > 0
+                                  ? this->latch_interval_ms_
+                                  : this->get_update_interval();
+  if (this->last_latch_wall_ms_ == 0 ||
+      (now - this->last_latch_wall_ms_) >= latch_gate) {
+    this->last_latch_wall_ms_ = now;
+    this->start_latch_phase_();
+  }
 
   // --- Real-time block (0x86..0xCF, refreshed every ~200 ms by the device) ---
   // Gate on STATUS bit0 (ready) — skip publish if the chip is mid-reset, in
@@ -1115,6 +1131,12 @@ void RbAmpComponent::dump_config() {
     LOG_PIN("  DRDY pin: ", this->drdy_pin_);
   }
   LOG_UPDATE_INTERVAL(this);
+  if (this->latch_interval_ms_ > 0) {
+    ESP_LOGCONFIG(TAG, "  LATCH interval: %ums (RT reads stay at update_interval)",
+                  this->latch_interval_ms_);
+  } else {
+    ESP_LOGCONFIG(TAG, "  LATCH interval: (tied to update_interval — v1.3 default)");
+  }
 }
 
 }  // namespace rbamp

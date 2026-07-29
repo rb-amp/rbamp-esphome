@@ -17,11 +17,13 @@ DEPENDENCIES = ["i2c"]
 AUTO_LOAD = ["sensor"]
 MULTI_CONF = True
 
-# Component version — synced with git tag `v1.3.0` on the public external-component
+# Component version — synced with git tag on the public external-component
 # repository (rb-amp/rbamp-esphome). Bump on any user-facing change (schema delta,
 # behaviour change, new public method). Tracks the wire-protocol contract version
-# at major.minor; the patch position covers component-only bug fixes.
-VERSION = "1.3.0"
+# at major.minor for wire-level bumps; minor bumps here can also cover
+# component-only feature additions (e.g. v1.4 adds `latch_interval:` YAML key
+# without any wire-protocol change).
+VERSION = "1.4.0"
 
 rbamp_ns = cg.esphome_ns.namespace("rbamp")
 RbAmpComponent = rbamp_ns.class_(
@@ -43,6 +45,23 @@ CONF_TOPOLOGY = "topology"
 # frames whose group byte matches. See README.md "Multi-module" section.
 CONF_FLEET_GC_ENABLE = "fleet_gc_enable"
 CONF_GROUP_ID = "group_id"
+
+# v1.4 — decouple LATCH cadence from RT-read cadence. When set, the ESPHome
+# component still reads the RT block (V/I/P/PF/Q) every `update_interval` but
+# only sends CMD_LATCH_PERIOD (and integrates the Wh accumulator on the
+# returned period average) every `latch_interval`. Wh remains monotonic and
+# accurate — master-side integration uses actual wall-clock dt between
+# LATCH events. Bus load falls proportional to `latch_interval / update_interval`.
+#
+# When unset (v1.3.0 default), latch cadence equals update_interval — the
+# original behaviour, backwards-compatible with existing YAML.
+#
+# Forward-compat note: STANDARD-tier firmware (F403, roadmap) will expose 8
+# independent period accumulators (windowed via REG_PERIOD_SEL/COMMIT). A
+# future v1.5 will accept `latch_intervals:` as a list of `{period_id,
+# interval}` entries; scalar form here normalises to period_id=0 today and
+# will continue to work as the primary period on STANDARD firmware.
+CONF_LATCH_INTERVAL = "latch_interval"
 
 # CT model identifiers — match REG_CT_MODEL values supported by the device
 # (0=unset, 1=-005, 2=-010, 3=-030, 4=-050, 5=-100).
@@ -201,6 +220,7 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_FLEET_GC_ENABLE): cv.boolean,
             cv.Optional(CONF_GROUP_ID): cv.All(cv.uint8_t, cv.Range(min=0, max=255)),
+            cv.Optional(CONF_LATCH_INTERVAL): cv.positive_time_period_milliseconds,
         }
     )
     .extend(cv.polling_component_schema("60s"))
@@ -229,8 +249,34 @@ def _clamp_update_interval(config):
     return config
 
 
-# Apply the update_interval clamp on top of the per-class validator chain.
-CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _clamp_update_interval)
+def _validate_latch_interval(config):
+    """`latch_interval:` (v1.4) must be >= `update_interval`. Setting it
+    shorter would mean LATCH cycles faster than we read the RT block —
+    the extra LATCHes get no observable data, just waste bus time.
+    """
+    latch = config.get(CONF_LATCH_INTERVAL)
+    update = config.get("update_interval")
+    if latch is not None and update is not None:
+        if latch.total_milliseconds < update.total_milliseconds:
+            raise cv.Invalid(
+                f"`latch_interval` ({latch.total_milliseconds} ms) must be "
+                f">= `update_interval` ({update.total_milliseconds} ms). "
+                "Setting a shorter latch cadence than the RT-read cadence "
+                "makes no sense — the extra LATCHes would produce no data "
+                "the component reads before the next LATCH overwrites them. "
+                "Either drop `latch_interval` (defaults to update_interval) "
+                "or set it to a value >= update_interval to slow the LATCH "
+                "cycle down for period accumulation while keeping RT fast."
+            )
+    return config
+
+
+# Apply validators on top of the per-class validator chain.
+CONFIG_SCHEMA = cv.All(
+    CONFIG_SCHEMA,
+    _clamp_update_interval,
+    _validate_latch_interval,
+)
 
 
 async def to_code(config):
@@ -268,3 +314,11 @@ async def to_code(config):
         cg.add(var.set_fleet_gc_enable(config[CONF_FLEET_GC_ENABLE]))
     if CONF_GROUP_ID in config:
         cg.add(var.set_group_id(config[CONF_GROUP_ID]))
+
+    # v1.4 latch-cadence decoupling. When unset, C++ side keeps the field at
+    # 0 which the update() gate reads as "use update_interval" (backwards
+    # compatible with v1.3 single-cadence behaviour).
+    if CONF_LATCH_INTERVAL in config:
+        cg.add(var.set_latch_interval_ms(
+            int(config[CONF_LATCH_INTERVAL].total_milliseconds)
+        ))
