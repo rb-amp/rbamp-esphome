@@ -1048,10 +1048,7 @@ makes the component run the procedure once at boot:
 4. Confirm at the new address. On success — the log `Address change confirmed at
    0x51` and `IMPORTANT: update YAML to address: 0x51 and remove new_address:`.
 
-**Requirement**: the module must be in **factory-provisioning mode** — a mode for
-one-time provisioning operations. Standard production modules ship with
-provisioning mode disabled; to change the address in the field, consult the
-module documentation or the supplier for the procedure to temporarily enable it.
+**Firmware compatibility**: on v1.3+ firmware the address change is **production-OK** — the component uses the two-phase commit protocol (stage → arm → commit → reboot) with no special mode required. On legacy firmware (v1.0-v1.2) the single-phase fallback requires **factory-provisioning mode**; consult the module documentation or your supplier for the procedure to temporarily enable it.
 
 **After success**: edit the YAML to `address: 0x51` and remove the line
 `new_address: 0x51`. Flash again. From the next boot, the component uses `0x51`

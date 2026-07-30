@@ -142,7 +142,7 @@ The most common causes:
 Possible causes:
 
 1. The address was written and saved, but the module entered a bad state (flash parameter corruption, a power glitch during the 700 ms write window).
-2. The module was not in factory-provisioning mode at the time of the attempt. The mode-status read may itself have failed (NACK), in which case the component performs the write speculatively, with a warning in the log.
+2. On legacy firmware (v1.0-v1.2): the module was not in factory-provisioning mode at the time of the attempt. On v1.3+ firmware this cause does not apply (two-phase commit is production-OK). If the mode-status read itself failed (NACK), the component performs the write speculatively, with a warning in the log.
 3. A wiring problem that existed before the address change (the old-address probe only succeeded by coincidence on one of the three retries).
 
 **Recovery procedure**:

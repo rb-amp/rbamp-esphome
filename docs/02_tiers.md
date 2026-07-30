@@ -112,7 +112,7 @@ rbamp:
   new_address: 0x51   # one-shot; remove after a successful boot
 ```
 
-Accepted on all tiers. Requires **factory-provisioning mode** on the module side — this is the mode the module is put into for one-time operations (address change, factory reset). Standard production modules ship with provisioning mode disabled — consult the module documentation or your supplier for the procedure to enable it.
+Accepted on all tiers. On firmware v1.3+ the address change is **production-OK** — the component uses a two-phase commit protocol (stage → arm → commit → reboot) with no special mode required. On legacy firmware (v1.0-v1.2) the single-phase fallback requires **factory-provisioning mode**; consult the module documentation or your supplier for the procedure to enable it. Factory-provisioning mode is still required on all firmware versions for **calibration (`saveGains`) and factory-reset** operations.
 
 Execution flow over a single boot: the component polls the current address, writes the new address and saves it to flash, resets the module, and verifies the response at the new address. After success, update the YAML to `address: 0x51` and remove `new_address:`. If the component finds that the old address is silent while the new one responds, it adapts automatically with a warning in the log (in case a previous boot already applied the change).
 
@@ -166,7 +166,7 @@ Requires a 10 kΩ pull-up on the master GPIO to 3.3 V (the output is open-drain;
 | `sensor_class:` | yes | yes | yes | Accepted by the schema; on v1.2+ a precondition for writing the CT model |
 | `ct_model:` / `ct_models:` | yes | yes | yes | Mutually exclusive; coefficient auto-load on v1.2+ |
 | `bidirectional:` | accepted | works | works | A no-op on BASIC |
-| `new_address:` | yes | yes | yes | Requires factory-provisioning mode; one-shot |
+| `new_address:` | yes | yes | yes | Production-OK on v1.3+ (two-phase commit); legacy v1.0-v1.2 requires factory-provisioning mode; one-shot |
 | `fleet_gc_enable:` / `broadcast_latch:` | yes | yes | yes | v1.3 opt-in via `FLEET_CONFIG.bit0` + `CAP_GC_LATCH`; legacy fw falls back to sequential latch |
 | `energy_exported` sensor | always 0 | works | works | Requires STANDARD / PRO hardware |
 | Phased sensors (`voltage_a/b/c`, `current_a/b/c`, …) | accepted by schema | accepted by schema | accepted by schema | Reserved for the upcoming rbAmp-U2I2 (split-phase) and rbAmp-U3I3 (three-phase) SKUs — the current firmware does not publish the values. Details in [09 §6](09_api_reference.md). |
