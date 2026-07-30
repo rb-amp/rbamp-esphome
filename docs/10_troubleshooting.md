@@ -181,8 +181,9 @@ recommendations):
 
 1. **Software**: the built-in NACK discipline — 50 kHz by default + 3× per-byte
    retry with a 5 ms gap + the IP-009 sanity filter `std::isfinite()`. Already
-   in the component since v0.2+. Do not disable `frequency: 50kHz` until the
-   stop-handler hardening fix ships in the firmware.
+   in the component since v0.2+. The stop-handler hardening fix shipped in
+   firmware v1.1/v1.3, but 50 kHz remains recommended on ESP-IDF masters
+   because the driver-timing interaction persists.
 2. **Hardware**: an external **4.7 kΩ pull-up** on SDA + SCL (a single external
    pull-up pair, with the in-module jumpers cut — see [§Multi-module bus](#multi-module-bus-primary-topology)).
    The ESP32 internal pull-ups (~50 kΩ) are **weak** — on a long bus or with a

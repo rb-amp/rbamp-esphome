@@ -845,7 +845,7 @@ i2c:
   scan: true         # optional: logs the addresses found at boot
 ```
 
-**Bus speed**: use `50kHz` on the current firmware. The module's I²C peripheral periodically NACKs at 100 kHz (~20% of transactions) due to a known behavior of the ESP-IDF `i2c_master` driver (confirmed in [esp-idf issue #9426](https://github.com/espressif/esp-idf/issues/9426), marked "Won't Do" by Espressif). The component's three-layer mitigation (retry + sanity + 50 kHz) drops the effective bad-read rate below 1%. When a firmware fix ships, the speed can be raised back to 100 kHz with a single line of YAML.
+**Bus speed**: use `50kHz` on ESP-IDF-based masters (ESP32 with ESPHome or Arduino). The module periodically NACKs at 100 kHz (~20% of transactions) due to a known interaction with the ESP-IDF `i2c_master` driver (confirmed in [esp-idf issue #9426](https://github.com/espressif/esp-idf/issues/9426), marked "Won't Do" by Espressif). Firmware v1.1/v1.3 hardened the module side, but the driver interaction persists — 50 kHz is the standing recommendation. The component's three-layer mitigation (retry + sanity + 50 kHz) drops the effective bad-read rate below 1%.
 
 **Pull-up resistors**: 4.7 kΩ to 3.3 V on SDA and SCL is recommended. Larger values (10 kΩ) increase the rise time and raise the NACK rate at 100 kHz.
 

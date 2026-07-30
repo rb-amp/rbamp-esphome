@@ -219,7 +219,7 @@ The component implements three mitigation layers:
 | Per-byte retry | 3 attempts, 5 ms pause, on each byte of each float32 | Clears a transient NACK before the data is used |
 | Loose sanity filter | `std::isfinite()` without hard physical bounds | Catches NaN/Inf/denormals from the stale buffer; lets through valid edge-case values (brownout, disconnect) |
 
-With all three layers active, the component achieves > 99% valid reads on the bench. At 100 kHz the current NACK rate is still too high for reliable operation; once the stop-handler hardening fix ships in the firmware, the frequency can be returned to 100 kHz with a single line in the YAML.
+With all three layers active, the component achieves > 99% valid reads on the bench at the recommended 50 kHz. Firmware v1.1 and v1.3 hardened the module's I²C recovery window, but 50 kHz remains the recommended setting on ESP-IDF-based masters because the driver-timing interaction persists at 100 kHz.
 
 ## The rbAmp library family
 

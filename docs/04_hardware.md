@@ -95,14 +95,14 @@ Set `frequency: 50kHz` in the ESPHome `i2c:` block. On the current firmware this
 i2c:
   sda: GPIO21
   scl: GPIO22
-  frequency: 50kHz    # mandatory — do not use 100 kHz on an ESP32 with v1 firmware
+  frequency: 50kHz    # recommended on ESP32 — ESP-IDF i2c_master driver interaction, see below
 ```
 
-The module periodically NACKs reads from an ESP32 at 100 kHz (~20% of transactions) because of how the ESP-IDF v5 `i2c_master` driver timing interacts with the post-STOP recovery window of the module's I²C peripheral (details in [`libs/spec/SPEC.md` Appendix B.5](https://www.rbamp.com/docs/modules-basic-standard-api-reference)). At 50 kHz the NACK rate drops by ~5×, and the per-byte retry inside the component pulls through > 99% of valid reads.
+The module periodically NACKs reads from an ESP32 at 100 kHz (~20% of transactions) because of the interaction between the ESP-IDF v5 `i2c_master` driver timing and the post-STOP recovery window of the module's I²C peripheral (details in [`libs/spec/SPEC.md` Appendix B.5](https://www.rbamp.com/docs/modules-basic-standard-api-reference)). At 50 kHz the NACK rate drops by about a factor of 5, and the per-byte retry inside the component recovers > 99% of valid reads.
 
-Do not raise the speed to 100 kHz on an ESP32 until the firmware ships the stop-handler hardening fix — after that the limit can be lifted with a single line in the YAML.
+Firmware has hardened the module's I²C recovery window (shipped in v1.1 and v1.3), which shrank the module-side contribution — but **50 kHz remains the recommended setting on ESP-IDF-based masters** because the driver-timing interaction persists at 100 kHz. Treat it as the standing recommendation for ESP32, not a temporary workaround awaiting a fix.
 
-Other I²C masters (STM32 HAL, Raspberry Pi smbus2, Arduino UNO / Nano) are not affected by this issue and can run at 100 kHz.
+Other I²C masters run this module at 100 kHz cleanly: STM32 HAL, RP2040 SDK, Raspberry Pi `smbus2` (Linux-kernel I²C), and **non-ESP32** Arduino (AVR / STM32duino). Note the axis is the *driver*, not the board: **Arduino on an ESP32 uses the same ESP-IDF `i2c_master` driver, so it wants 50 kHz too** — only non-ESP32 Arduino runs 100 kHz.
 
 ## Reference schematic — one ESP32 + one rbAmp
 

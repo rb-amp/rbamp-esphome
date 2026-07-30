@@ -520,7 +520,7 @@ ota:
 i2c:
   sda: GPIO21
   scl: GPIO22
-  frequency: 50kHz    # 100 kHz causes periodic NACKs from the module;
+  frequency: 50kHz    # recommended on ESP32; 100 kHz causes periodic NACKs due to ESP-IDF i2c_master driver interaction;
                       # 50 kHz reduces them ~5-10× — see the chapter end link.
   scan: true
 
@@ -842,7 +842,7 @@ ota:
 i2c:
   sda: GPIO21
   scl: GPIO22
-  frequency: 50kHz    # mandatory: at 100 kHz with three modules, periodic
+  frequency: 50kHz    # recommended: at 100 kHz the ESP-IDF i2c_master driver interaction causes periodic
                       # NACKs are almost inevitable on every cycle
   scan: true
 
