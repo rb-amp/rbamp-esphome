@@ -1,7 +1,7 @@
 # Funding configuration для rb-amp org
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
 
-custom: ["https://rbamp.com/early-access"]
+custom: ["https://rbamp.com/early-access?utm_source=github&utm_medium=referral&utm_campaign=ui-series-launch"]
 
 # Activate later if community asks:
 # github: [rb-amp]
