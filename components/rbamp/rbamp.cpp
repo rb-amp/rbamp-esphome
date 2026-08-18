@@ -229,7 +229,7 @@ void RbAmpComponent::save_prefs_() {
 // Production firmware (REG_MODE = 0) refuses flash-writing operations from
 // the master. The device must be in its factory-provisioning mode for
 // CMD_SAVE_GAINS / address-change / sensor_class writes to take effect.
-bool RbAmpComponent::check_develop_mode_(const char *op_name) {
+bool RbAmpComponent::check_factory_mode_(const char *op_name) {
   uint8_t mode = 0;
   if (!this->read_u8_(REG_MODE, &mode)) {
     ESP_LOGW(TAG, "Cannot read REG_MODE; skipping %s", op_name);
@@ -248,7 +248,7 @@ bool RbAmpComponent::check_develop_mode_(const char *op_name) {
 }
 
 void RbAmpComponent::apply_ct_model_() {
-  if (!this->check_develop_mode_("CT model write")) {
+  if (!this->check_factory_mode_("CT model write")) {
     return;
   }
 
@@ -315,8 +315,8 @@ void RbAmpComponent::apply_sensor_class_() {
   }
 
   // UNSET (0) is a legitimate sensor_class value (rare; user-explicit reset
-  // before a model swap). Still requires develop mode + flash write.
-  if (!this->check_develop_mode_("Sensor class write")) {
+  // before a model swap). Still requires factory mode + flash write.
+  if (!this->check_factory_mode_("Sensor class write")) {
     return;
   }
 
@@ -379,7 +379,7 @@ void RbAmpComponent::apply_ct_models_per_channel_() {
     ESP_LOGD(TAG, "REG_CT_MODEL_CH0/1/2 unreadable (legacy firmware?) — applying writes unconditionally");
   }
 
-  if (!this->check_develop_mode_("Per-channel CT model write")) {
+  if (!this->check_factory_mode_("Per-channel CT model write")) {
     return;
   }
 
@@ -478,7 +478,7 @@ void RbAmpComponent::apply_fleet_config_() {
     return;
   }
 
-  if (!this->check_develop_mode_("Fleet config write")) {
+  if (!this->check_factory_mode_("Fleet config write")) {
     return;
   }
 
@@ -719,7 +719,7 @@ void RbAmpComponent::apply_address_change_() {
   // RESET, gated on factory-provisioning mode (REG_MODE=1) per the old
   // contract.
   bool two_phase = this->check_capability_(CAP_TWO_PHASE_ADDR);
-  if (!two_phase && !this->check_develop_mode_("Address change (legacy single-phase)")) {
+  if (!two_phase && !this->check_factory_mode_("Address change (legacy single-phase)")) {
     return;
   }
 

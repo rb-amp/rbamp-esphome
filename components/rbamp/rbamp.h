@@ -142,7 +142,7 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   // High-level operations
   bool probe_slave_();
   void detect_variant_();
-  bool check_develop_mode_(const char *op_name);
+  bool check_factory_mode_(const char *op_name);
   void apply_sensor_class_();
   void apply_ct_model_();
   void apply_ct_models_per_channel_();

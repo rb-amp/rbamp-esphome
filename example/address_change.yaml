@@ -7,7 +7,7 @@
 #          If 0x50 NACKs but 0x51 ACKs (e.g. you re-flashed and the change
 #          already happened previously), the component auto-adopts 0x51 and
 #          logs a warning telling you to clean up YAML — no re-write happens.
-#        - Verify REG_MODE = 1 (develop). On production firmware the change
+#        - Verify the device is in factory mode. On production firmware the change
 #          is refused and the component stays at 0x50 with a warning.
 #        - Write REG_I2C_ADDRESS = 0x51, CMD_SAVE_GAINS, wait 700 ms,
 #          CMD_RESET, wait 300 ms, then set_i2c_address(0x51).

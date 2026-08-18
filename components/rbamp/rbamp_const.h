@@ -35,11 +35,11 @@ static constexpr uint8_t REG_STATUS              = 0x00;  // bit0=READY, bit1=ER
 static constexpr uint8_t REG_COMMAND             = 0x01;  // Write CMD_* opcode
 static constexpr uint8_t REG_ERROR               = 0x02;  // 0x00=OK; 0xFA..0xFF error classes (ERR_CLONE 0xF9 v1.3)
 static constexpr uint8_t REG_VERSION             = 0x03;  // 0x01=v1.0 .. 0x04=v1.3
-static constexpr uint8_t REG_MODE                = 0x04;  // 0=production, 1=develop (factory-provisioning mode)
+static constexpr uint8_t REG_MODE                = 0x04;  // Device mode byte (read-only, factory use)
 
 // ---- CT model / sensor class -----------------------------------------------
 static constexpr uint8_t REG_CT_MODEL            = 0x05;  // Scratch: write code then CMD_SET_CT_MODEL_CHn
-static constexpr uint8_t REG_PHASE_SAMPLES       = 0x06;  // U-vs-I sample advance (develop-gated write)
+static constexpr uint8_t REG_PHASE_SAMPLES       = 0x06;  // U-vs-I sample advance (factory-gated write)
 static constexpr uint8_t REG_PERIOD_VALID        = 0x07;  // Level flag (NOT cleared-on-read)
 static constexpr uint8_t REG_SENSOR_CLASS        = 0x25;  // 0=UNSET, 1=SCT_013, 2=WIRED_CT, 3=BUILTIN_CT
 static constexpr uint8_t REG_CT_MODEL_CH0        = 0x51;  // v1.3 read-back: applied model per channel
