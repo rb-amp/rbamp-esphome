@@ -72,7 +72,7 @@ Run for 1+ hours covering at least 2 reboot cycles to confirm no drift.
 
 ### Phase 5 — address change (m6)
 
-Develop-mode firmware required.
+Factory-mode firmware required.
 
 1. Flash `example/address_change.yaml` (0x50 → 0x51).
 2. Watch logs:
