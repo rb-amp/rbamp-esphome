@@ -9,7 +9,7 @@ Cross-references:
 - Arduino client library: [`rbamp-arduino`](https://github.com/rbamp/rbamp-arduino)
 - ESP-IDF client library: [`rbamp-esp-idf`](https://github.com/rbamp/rbamp-esp-idf)
 - Python (CPython + MicroPython): [`rbamp-python`](https://github.com/rbamp/rbamp-python)
-- STM32 HAL: [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in development)*
+- STM32 HAL: [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in factoryment)*
 
 ---
 
@@ -417,7 +417,7 @@ The rbAmp module is an ordinary I²C slave. Any I²C master can read it using th
 | Arduino | [`rbamp-arduino`](https://github.com/rbamp/rbamp-arduino) | C++ | ESP32 (Arduino framework), AVR, RP2040 |
 | ESP-IDF | [`rbamp-esp-idf`](https://github.com/rbamp/rbamp-esp-idf) | C | ESP32 (IDF framework) |
 | Python (CPython + MicroPython) | [`rbamp-python`](https://github.com/rbamp/rbamp-python) | Python 3 | Raspberry Pi, Linux SBC, PC, ESP32/RP2040/STM32 on MicroPython |
-| STM32 HAL | [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in development)* | C | STM32 (HAL), other Cortex-M |
+| STM32 HAL | [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in factoryment)* | C | STM32 (HAL), other Cortex-M |
 
 All libraries implement the same register map and period-metering protocol as the ESPHome component. They can be used independently or in parallel.
 

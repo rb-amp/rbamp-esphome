@@ -291,7 +291,7 @@ The full flow runs once in `setup()`:
 
 **After a successful change**: update the YAML to `address: <new>` and remove `new_address:`. If the module is at the new address on the next boot but `new_address:` is still in the YAML, the boot-time probe of the old address fails, the probe of the new address succeeds, the component adapts with a warning, and no re-write happens.
 
-> ⚠ **Develop-mode-only on legacy firmware (v1.0-v1.2)**.
+> ⚠ **Factory-mode-only on legacy firmware (v1.0-v1.2)**.
 >
 > Standard production modules on legacy firmware shipped with provisioning mode disabled. Writing `new_address:` to such a module without factory mode will be rejected (warning `WARN_FACTORY_MODE_REQUIRED`). On v1.3 firmware this restriction is gone — the capability bit detects the production-OK path automatically.
 
