@@ -479,8 +479,8 @@ When you use the HA ESPHome Add-on (recommended for most users):
 1. The Add-on stores the YAML configs in `/config/esphome/` (accessible through the HA file system or the Add-on's editor UI).
 2. `secrets.yaml` lives next to the device YAML files in `/config/esphome/`.
 3. The `external_components` path must be reachable from inside the Add-on container. Options:
-    - Copy the `components/rbamp/` directory into `/config/esphome/components/` and specify `path: components/` (relative).
-    - Once the component is published on GitHub, use the remote form: `source: github://rb-amp/rbamp-esphome@main`.
+    - **Recommended:** use the remote form: `source: github://rb-amp/rbamp-esphome@main` (the component is published on GitHub).
+    - Alternatively, copy the `components/rbamp/` directory into `/config/esphome/components/` and specify `path: components/` (relative).
 4. OTA: the Add-on performs the OTA flash itself — click "Install" on the device card and the Add-on attempts an OTA to the last known IP. USB flashing is also available through the Add-on's serial port if the ESP32 is connected to the HA host.
 
 The Add-on includes a built-in log viewer (the "Logs" button on the device card) — the equivalent of `esphome logs` in the CLI.
