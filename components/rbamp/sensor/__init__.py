@@ -49,20 +49,44 @@ DEPENDENCIES = ["rbamp"]
 
 CONF_RBAMP_ID = "rbamp_id"
 
-# Single-phase sub-channel keys (used by UI2/UI3 multi-channel variants)
+# Single-phase sub-channel keys (used by UI2/UI3 + v1.5 UI5/UI7 senior SKUs).
+# Slots 1..2 use the flat register block (0x86..0xD8) — same as ch0. Slots 3..6
+# are v1.5 (senior SKUs) and read through the channel-access window
+# (REG_CHANNEL_SELECT 0x32 + REG_CHANNEL_DATA 0x3C) — two I²C transactions per
+# value (select + read), factor into your update_interval budget.
 CONF_CURRENT_1 = "current_1"
 CONF_CURRENT_2 = "current_2"
+CONF_CURRENT_3 = "current_3"
+CONF_CURRENT_4 = "current_4"
+CONF_CURRENT_5 = "current_5"
+CONF_CURRENT_6 = "current_6"
 CONF_POWER_1 = "power_1"
 CONF_POWER_2 = "power_2"
+CONF_POWER_3 = "power_3"
+CONF_POWER_4 = "power_4"
+CONF_POWER_5 = "power_5"
+CONF_POWER_6 = "power_6"
 CONF_ENERGY_1 = "energy_1"
 CONF_ENERGY_2 = "energy_2"
+CONF_ENERGY_3 = "energy_3"
+CONF_ENERGY_4 = "energy_4"
+CONF_ENERGY_5 = "energy_5"
+CONF_ENERGY_6 = "energy_6"
 CONF_ENERGY_EXPORTED = "energy_exported"
 CONF_ENERGY_EXPORTED_1 = "energy_exported_1"
 CONF_ENERGY_EXPORTED_2 = "energy_exported_2"
 CONF_POWER_FACTOR_1 = "power_factor_1"
 CONF_POWER_FACTOR_2 = "power_factor_2"
+CONF_POWER_FACTOR_3 = "power_factor_3"
+CONF_POWER_FACTOR_4 = "power_factor_4"
+CONF_POWER_FACTOR_5 = "power_factor_5"
+CONF_POWER_FACTOR_6 = "power_factor_6"
 CONF_REACTIVE_POWER_1 = "reactive_power_1"
 CONF_REACTIVE_POWER_2 = "reactive_power_2"
+CONF_REACTIVE_POWER_3 = "reactive_power_3"
+CONF_REACTIVE_POWER_4 = "reactive_power_4"
+CONF_REACTIVE_POWER_5 = "reactive_power_5"
+CONF_REACTIVE_POWER_6 = "reactive_power_6"
 
 # Phased keys (reserved for U2I2 / U3I3 future SKU)
 CONF_VOLTAGE_A = "voltage_a"
@@ -142,21 +166,41 @@ SINGLE_FIELDS = {
     CONF_CURRENT: CURRENT_SCHEMA,
     CONF_CURRENT_1: CURRENT_SCHEMA,
     CONF_CURRENT_2: CURRENT_SCHEMA,
+    CONF_CURRENT_3: CURRENT_SCHEMA,
+    CONF_CURRENT_4: CURRENT_SCHEMA,
+    CONF_CURRENT_5: CURRENT_SCHEMA,
+    CONF_CURRENT_6: CURRENT_SCHEMA,
     CONF_POWER: POWER_SCHEMA,
     CONF_POWER_1: POWER_SCHEMA,
     CONF_POWER_2: POWER_SCHEMA,
+    CONF_POWER_3: POWER_SCHEMA,
+    CONF_POWER_4: POWER_SCHEMA,
+    CONF_POWER_5: POWER_SCHEMA,
+    CONF_POWER_6: POWER_SCHEMA,
     CONF_ENERGY: ENERGY_SCHEMA,
     CONF_ENERGY_1: ENERGY_SCHEMA,
     CONF_ENERGY_2: ENERGY_SCHEMA,
+    CONF_ENERGY_3: ENERGY_SCHEMA,
+    CONF_ENERGY_4: ENERGY_SCHEMA,
+    CONF_ENERGY_5: ENERGY_SCHEMA,
+    CONF_ENERGY_6: ENERGY_SCHEMA,
     CONF_ENERGY_EXPORTED: ENERGY_SCHEMA,
     CONF_ENERGY_EXPORTED_1: ENERGY_SCHEMA,
     CONF_ENERGY_EXPORTED_2: ENERGY_SCHEMA,
     CONF_POWER_FACTOR: PF_SCHEMA,
     CONF_POWER_FACTOR_1: PF_SCHEMA,
     CONF_POWER_FACTOR_2: PF_SCHEMA,
+    CONF_POWER_FACTOR_3: PF_SCHEMA,
+    CONF_POWER_FACTOR_4: PF_SCHEMA,
+    CONF_POWER_FACTOR_5: PF_SCHEMA,
+    CONF_POWER_FACTOR_6: PF_SCHEMA,
     CONF_REACTIVE_POWER: REACTIVE_POWER_SCHEMA,
     CONF_REACTIVE_POWER_1: REACTIVE_POWER_SCHEMA,
     CONF_REACTIVE_POWER_2: REACTIVE_POWER_SCHEMA,
+    CONF_REACTIVE_POWER_3: REACTIVE_POWER_SCHEMA,
+    CONF_REACTIVE_POWER_4: REACTIVE_POWER_SCHEMA,
+    CONF_REACTIVE_POWER_5: REACTIVE_POWER_SCHEMA,
+    CONF_REACTIVE_POWER_6: REACTIVE_POWER_SCHEMA,
 }
 
 PHASED_FIELDS = {
@@ -199,15 +243,34 @@ _SINGLE_SLOT_DEPS = [
     (CONF_POWER, [CONF_CURRENT, CONF_VOLTAGE]),
     (CONF_POWER_1, [CONF_CURRENT_1, CONF_VOLTAGE]),
     (CONF_POWER_2, [CONF_CURRENT_2, CONF_VOLTAGE]),
+    (CONF_POWER_3, [CONF_CURRENT_3, CONF_VOLTAGE]),
+    (CONF_POWER_4, [CONF_CURRENT_4, CONF_VOLTAGE]),
+    (CONF_POWER_5, [CONF_CURRENT_5, CONF_VOLTAGE]),
+    (CONF_POWER_6, [CONF_CURRENT_6, CONF_VOLTAGE]),
     (CONF_ENERGY, [CONF_CURRENT, CONF_VOLTAGE]),
     (CONF_ENERGY_1, [CONF_CURRENT_1, CONF_VOLTAGE]),
     (CONF_ENERGY_2, [CONF_CURRENT_2, CONF_VOLTAGE]),
+    (CONF_ENERGY_3, [CONF_CURRENT_3, CONF_VOLTAGE]),
+    (CONF_ENERGY_4, [CONF_CURRENT_4, CONF_VOLTAGE]),
+    (CONF_ENERGY_5, [CONF_CURRENT_5, CONF_VOLTAGE]),
+    (CONF_ENERGY_6, [CONF_CURRENT_6, CONF_VOLTAGE]),
     (CONF_POWER_FACTOR, [CONF_CURRENT, CONF_VOLTAGE]),
     (CONF_POWER_FACTOR_1, [CONF_CURRENT_1, CONF_VOLTAGE]),
     (CONF_POWER_FACTOR_2, [CONF_CURRENT_2, CONF_VOLTAGE]),
+    (CONF_POWER_FACTOR_3, [CONF_CURRENT_3, CONF_VOLTAGE]),
+    (CONF_POWER_FACTOR_4, [CONF_CURRENT_4, CONF_VOLTAGE]),
+    (CONF_POWER_FACTOR_5, [CONF_CURRENT_5, CONF_VOLTAGE]),
+    (CONF_POWER_FACTOR_6, [CONF_CURRENT_6, CONF_VOLTAGE]),
     (CONF_REACTIVE_POWER, [CONF_CURRENT, CONF_VOLTAGE]),
     (CONF_REACTIVE_POWER_1, [CONF_CURRENT_1, CONF_VOLTAGE]),
     (CONF_REACTIVE_POWER_2, [CONF_CURRENT_2, CONF_VOLTAGE]),
+    # Reactive power (Q) is not exposed via the channel window on ch3+ (public
+    # fields cover I_RMS/I_PEAK/P_REAL/PF only; Q would need private field).
+    # Slots 3..6 accept CONF_REACTIVE_POWER_* schema-wise but publish zero/NaN.
+    (CONF_REACTIVE_POWER_3, [CONF_CURRENT_3, CONF_VOLTAGE]),
+    (CONF_REACTIVE_POWER_4, [CONF_CURRENT_4, CONF_VOLTAGE]),
+    (CONF_REACTIVE_POWER_5, [CONF_CURRENT_5, CONF_VOLTAGE]),
+    (CONF_REACTIVE_POWER_6, [CONF_CURRENT_6, CONF_VOLTAGE]),
     (CONF_APPARENT_POWER, [CONF_CURRENT, CONF_VOLTAGE]),
 ]
 
@@ -250,21 +313,41 @@ _SETTER_MAP = {
     CONF_CURRENT: "set_current_sensor",
     CONF_CURRENT_1: "set_current_1_sensor",
     CONF_CURRENT_2: "set_current_2_sensor",
+    CONF_CURRENT_3: "set_current_3_sensor",
+    CONF_CURRENT_4: "set_current_4_sensor",
+    CONF_CURRENT_5: "set_current_5_sensor",
+    CONF_CURRENT_6: "set_current_6_sensor",
     CONF_POWER: "set_power_sensor",
     CONF_POWER_1: "set_power_1_sensor",
     CONF_POWER_2: "set_power_2_sensor",
+    CONF_POWER_3: "set_power_3_sensor",
+    CONF_POWER_4: "set_power_4_sensor",
+    CONF_POWER_5: "set_power_5_sensor",
+    CONF_POWER_6: "set_power_6_sensor",
     CONF_ENERGY: "set_energy_sensor",
     CONF_ENERGY_1: "set_energy_1_sensor",
     CONF_ENERGY_2: "set_energy_2_sensor",
+    CONF_ENERGY_3: "set_energy_3_sensor",
+    CONF_ENERGY_4: "set_energy_4_sensor",
+    CONF_ENERGY_5: "set_energy_5_sensor",
+    CONF_ENERGY_6: "set_energy_6_sensor",
     CONF_ENERGY_EXPORTED: "set_energy_exported_sensor",
     CONF_ENERGY_EXPORTED_1: "set_energy_exported_1_sensor",
     CONF_ENERGY_EXPORTED_2: "set_energy_exported_2_sensor",
     CONF_POWER_FACTOR: "set_power_factor_sensor",
     CONF_POWER_FACTOR_1: "set_power_factor_1_sensor",
     CONF_POWER_FACTOR_2: "set_power_factor_2_sensor",
+    CONF_POWER_FACTOR_3: "set_power_factor_3_sensor",
+    CONF_POWER_FACTOR_4: "set_power_factor_4_sensor",
+    CONF_POWER_FACTOR_5: "set_power_factor_5_sensor",
+    CONF_POWER_FACTOR_6: "set_power_factor_6_sensor",
     CONF_REACTIVE_POWER: "set_reactive_power_sensor",
     CONF_REACTIVE_POWER_1: "set_reactive_power_1_sensor",
     CONF_REACTIVE_POWER_2: "set_reactive_power_2_sensor",
+    CONF_REACTIVE_POWER_3: "set_reactive_power_3_sensor",
+    CONF_REACTIVE_POWER_4: "set_reactive_power_4_sensor",
+    CONF_REACTIVE_POWER_5: "set_reactive_power_5_sensor",
+    CONF_REACTIVE_POWER_6: "set_reactive_power_6_sensor",
     # Phased
     CONF_VOLTAGE_A: "set_voltage_a_sensor",
     CONF_VOLTAGE_B: "set_voltage_b_sensor",

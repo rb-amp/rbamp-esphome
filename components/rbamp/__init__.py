@@ -23,7 +23,7 @@ MULTI_CONF = True
 # at major.minor for wire-level bumps; minor bumps here can also cover
 # component-only feature additions (e.g. v1.4 adds `latch_interval:` YAML key
 # without any wire-protocol change).
-VERSION = "1.4.0"
+VERSION = "1.6.0"
 
 rbamp_ns = cg.esphome_ns.namespace("rbamp")
 RbAmpComponent = rbamp_ns.class_(
@@ -63,41 +63,26 @@ CONF_GROUP_ID = "group_id"
 # will continue to work as the primary period on STANDARD firmware.
 CONF_LATCH_INTERVAL = "latch_interval"
 
-# CT model identifiers — match REG_CT_MODEL values supported by the device
-# (0=unset, 1=-005, 2=-010, 3=-030, 4=-050, 5=-100).
+# CT model identifiers — v1.6: generated from libs/spec/sensor_models.yaml
+# (single source of truth for code→meaning across firmware + all libraries).
+# Hardcoded model lists were retired 2026-09-04 after the six-model drift
+# incident. See registry.py for parser + fallback logic.
 #
-# IMPORTANT — writing `ct_model:` alone does NOT calibrate the device. It only
-# stores a metadata byte. The actual noise-floor and gain calibration tables
-# must be tuned per-device against the user's CT clamp + burden network using
-# the manufacturer's calibration tooling and reference meter (consult the
-# device documentation for the procedure). Upcoming firmware revisions will
-# add an auto-populate-on-CT_MODEL-write path; until then this key is
-# informational.
-# CT model codes — full v1.3 space (REG_CT_MODEL accepts 0..7):
-#   0 = unset
-#   1 = SCT_013-5A    (5 A primary)
-#   2 = SCT_013-10A   (10 A primary)
-#   3 = SCT_013-30A   (30 A primary)
-#   4 = SCT_013-50A   (50 A primary)
-#   5 = SCT_013-100A  (100 A primary; RESERVED — see CT_MODEL_ALLOWED_PER_CLASS)
-#   6 = SCT_013-20A   (20 A primary; v1.3 new)
-#   7 = SCT_013-60A   (60 A primary; RESERVED — see CT_MODEL_ALLOWED_PER_CLASS)
+# Symbol convention (kept backwards-compat with pre-v1.6 YAMLs):
+#   * SCT_013 clamps: SCT_013_<3-digit-A>  e.g. SCT_013_005, SCT_013_030
+#   * WIRED_CT slots: WIRED_CT_<code>      e.g. WIRED_CT_1 (legacy), WIRED_CT_6 (1A clamp)
 #
-# For WIRED_CT class, codes 1..3 select factory-calibrated wired-CT presets
-# (PCB-mounted current transformer with known turns ratio); codes 4..7 are
-# reserved. For BUILTIN_CT class (fixed integrated CT, e.g. shunt-based
-# variants), NO ct_model selection is valid — the device's onboard sensor is
-# the only option.
-CT_MODELS = {
-    "SCT_013_005": 1,
-    "SCT_013_010": 2,
-    "SCT_013_020": 6,   # v1.3 new
-    "SCT_013_030": 3,
-    "SCT_013_050": 4,
-    "WIRED_CT_1":  1,   # factory-preset wired-CT slot 1
-    "WIRED_CT_2":  2,
-    "WIRED_CT_3":  3,
-}
+# IMPORTANT — writing `ct_model:` / `ct_models:` on v1.4.18+ firmware applies
+# the preset (GAIN + NF from the factory table) immediately on the target
+# channel. On older firmware the byte is metadata-only; per-unit calibration
+# via the manufacturer's tooling remains required for accurate readings.
+from .registry import (
+    CT_MODELS,
+    CT_MODEL_ALLOWED_PER_CLASS,
+    CT_MODEL_STATUS,
+    CT_MODEL_DESCRIPTORS,
+    REGISTRY_SOURCE,
+)
 
 # Sensor classes — v1.2+ firmware. Pinned via `sensor_class:` YAML key (writes
 # REG_SENSOR_CLASS + CMD_SAVE_GAINS). On v1.2+ firmware this is a PRECONDITION
@@ -111,17 +96,12 @@ RBAMP_SENSOR_CLASSES = {
     "BUILTIN_CT": 3,
 }
 
-# Per-class CT model validation — root SEED 2026-06-16 gotcha #3:
-# valid CT-code sets are NON-CONTIGUOUS. Firmware is the ultimate authority
-# (it returns DEV_ERR_PARAM at runtime for out-of-set codes); this schema-side
-# validator surfaces the constraint at `esphome config` time so users don't
-# have to flash + boot + read logs to discover a typo.
-CT_MODEL_ALLOWED_PER_CLASS = {
-    "UNSET":      set(),           # no class chosen → no CT model allowed
-    "SCT_013":    {1, 2, 3, 4, 6}, # -005, -010, -030, -050, -020 (codes 5,7 reserved)
-    "WIRED_CT":   {1, 2, 3},       # factory preset slots
-    "BUILTIN_CT": set(),           # device's onboard CT only — no preset selection
-}
+# CT_MODEL_ALLOWED_PER_CLASS is now provided by registry.py (imported above).
+# The set is derived from sensor_models.yaml: `characterized` + `legacy`
+# rows are on-firmware and accepted; `reserved` rows return ERR_PARAM and
+# are rejected at YAML-parse time so the user sees the constraint before
+# flash + boot.
+CT_MODEL_ALLOWED_PER_CLASS.setdefault("UNSET", set())
 
 # Topology hint. v1 firmware exposes no REG_TOPOLOGY byte (planned for v1.1) and
 # never NACKs unmapped reads, so the master cannot probe channel count reliably
@@ -161,33 +141,71 @@ def _validate_ct_model_mutex(config):
 
 
 def _validate_ct_model_per_class(config):
-    """Reject CT codes outside the firmware's per-class allowed set (root SEED
-    2026-06-16 gotcha #3). Firmware authority: the codes are non-contiguous
-    inside the 0..7 enum space, so validation can't be expressed as a simple
-    range; it must be a set membership check against CT_MODEL_ALLOWED_PER_CLASS.
-    Catches the common mistakes:
-      * `sensor_class: SCT_013` + `ct_model: SCT_013_100` (code 5 reserved)
-      * `sensor_class: BUILTIN_CT` + ANY ct_model (BUILTIN_CT has no preset
-        selection — the onboard CT is fixed)
-      * `sensor_class: WIRED_CT` + `ct_model: SCT_013_050` (code 4 not in
-        WIRED_CT's {1,2,3} preset slots)
+    """Reject CT codes outside the shipping-firmware allowed set for the pinned
+    sensor_class. Enforcement is by-registry (registry.py loaded from
+    libs/spec/sensor_models.yaml at import time):
+
+      * ``characterized`` + ``legacy`` codes are on shipping firmware — accepted.
+      * ``reserved`` codes have no preset row → firmware returns ERR_PARAM 0xFE
+        and the channel keeps its previous model. Rejected here with an
+        explicit "reserved" hint so the user doesn't see a generic cv.enum
+        "unknown value" error.
+      * Class mismatch (e.g. sensor_class: SCT_013 with a WIRED_CT_<n> code)
+        rejected with the "allowed for <class>" list.
+
+    ``legacy`` codes pass but emit a codegen-time warning (see
+    ``_check_code`` below) — they shipped historically and are still valid,
+    but were not re-verified on the current op-amp revision.
     """
+    import logging
+    _log = logging.getLogger("rbamp")
+
     sensor_class = config.get(CONF_SENSOR_CLASS, "UNSET")
     allowed_codes = CT_MODEL_ALLOWED_PER_CLASS.get(sensor_class, set())
 
     def _check_code(code, location):
         # `code` is the cv.enum KEY string (e.g. "SCT_013_030"); map to the
         # firmware int via CT_MODELS before the int-set membership test.
-        if CT_MODELS[code] not in allowed_codes:
-            # Build a friendly "what IS allowed" hint from CT_MODELS lookup
+        code_int = CT_MODELS[code]
+        status = CT_MODEL_STATUS.get((sensor_class, code_int), "reserved")
+
+        if code_int not in allowed_codes:
+            # Filter hint by class prefix: SCT_013_* symbols belong to SCT_013,
+            # WIRED_CT_* to WIRED_CT. Symbol codes collide across classes
+            # (SCT_013_005 = 1, WIRED_CT_1 = 1) so a plain "code in allowed_codes"
+            # lookup would list the wrong class's symbols too.
+            symbol_prefix = f"{sensor_class}_"
             allowed_names = sorted(
-                name for name, c in CT_MODELS.items() if c in allowed_codes
+                name for name, c in CT_MODELS.items()
+                if name.startswith(symbol_prefix)
+                and c in allowed_codes
+                and CT_MODEL_STATUS.get((sensor_class, c)) in ("characterized", "legacy")
             )
-            hint = ", ".join(allowed_names) if allowed_names else "(none — this class has no CT model selection)"
+            hint = ", ".join(allowed_names) if allowed_names else (
+                "(none — this class has no CT model selection)"
+            )
+            if status == "reserved":
+                raise cv.Invalid(
+                    f"CT model `{code}` is RESERVED — the code is allocated in "
+                    f"the model registry but no preset row exists on shipping "
+                    f"firmware, so a write returns ERR_PARAM 0xFE. Location: "
+                    f"`{location}` under sensor_class `{sensor_class}`. "
+                    f"Allowed for `{sensor_class}`: {hint}."
+                )
             raise cv.Invalid(
-                f"CT model code {code} is not valid for sensor_class "
-                f"`{sensor_class}` ({location}). The firmware will reject this "
-                f"write with DEV_ERR_PARAM. Allowed for `{sensor_class}`: {hint}."
+                f"CT model `{code}` is not valid for sensor_class "
+                f"`{sensor_class}` ({location}). Firmware will reject the "
+                f"write with ERR_PARAM 0xFE. Allowed for `{sensor_class}`: "
+                f"{hint}."
+            )
+
+        if status == "legacy":
+            _log.warning(
+                "rbamp: `%s` (%s) is a LEGACY model — shipped historically "
+                "but NOT re-verified on the current op-amp revision. Measured "
+                "G may diverge from the published table; per-unit calibration "
+                "recommended. See libs/spec/sensor_models.yaml for the note.",
+                code, location,
             )
 
     if CONF_CT_MODEL in config:
@@ -207,7 +225,12 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_CT_MODEL): cv.enum(CT_MODELS, upper=True),
             cv.Optional(CONF_CT_MODELS): cv.All(
                 cv.ensure_list(cv.enum(CT_MODELS, upper=True)),
-                cv.Length(min=1, max=3),
+                # v1.6: 16-channel reserve (window selector nibble is 4 bits).
+                # Runtime code cross-checks against n_channels_ detected from
+                # REG_TOPOLOGY and logs a mismatch warning rather than failing
+                # to boot — a UI7 YAML with 7 slots must still validate on a
+                # UI1 board where only ch0 will actually be written.
+                cv.Length(min=1, max=16),
             ),
             cv.Optional(CONF_SENSOR_CLASS, default="SCT_013"): cv.enum(
                 RBAMP_SENSOR_CLASSES, upper=True

@@ -20,8 +20,12 @@ enum class Topology : uint8_t {
 // NVS payload for energy persistence. Layout MUST stay trivially-copyable
 // (POD). When layout changes, bump RBAMP_PREF_VERSION so stale data is
 // discarded on load instead of producing garbage Wh totals.
+// NVS-persisted Wh totals. v1.5 extends [3]→[7] for senior SKUs UI5/UI7.
+// Layout change is a schema migration — legacy 3-channel data is read as-is
+// (first 3 slots), ch3-6 initialize to zero on first v1.5 boot (fresh flash
+// prefs slot allocated for the v1.5 schema).
 struct RbAmpPrefData {
-  double energy_total_wh[3];
+  double energy_total_wh[7];
   double energy_export_wh[3];
 } __attribute__((packed));
 
@@ -38,7 +42,11 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void set_drdy_pin(GPIOPin *pin) { drdy_pin_ = pin; }
   void set_ct_model(uint8_t m) { ct_model_ = m; }
   void set_ct_model_ch(uint8_t ch, uint8_t code) {
-    if (ch < 3) ct_models_request_[ch] = code;
+    // v1.6: 16-channel reserve; codegen already length-caps at 16 slots.
+    // Runtime apply path guards on n_channels_ and only writes what the
+    // detected variant supports — a stray slot past variant N is a no-op
+    // with a warning line, not a crash.
+    if (ch < 16) ct_models_request_[ch] = code;
   }
   void set_sensor_class(uint8_t cls) { sensor_class_request_ = cls; }
   void set_bidirectional(bool b) { bidirectional_ = b; }
@@ -90,21 +98,41 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void set_current_sensor(sensor::Sensor *s) { current_[0] = s; }
   void set_current_1_sensor(sensor::Sensor *s) { current_[1] = s; }
   void set_current_2_sensor(sensor::Sensor *s) { current_[2] = s; }
+  void set_current_3_sensor(sensor::Sensor *s) { current_[3] = s; }
+  void set_current_4_sensor(sensor::Sensor *s) { current_[4] = s; }
+  void set_current_5_sensor(sensor::Sensor *s) { current_[5] = s; }
+  void set_current_6_sensor(sensor::Sensor *s) { current_[6] = s; }
   void set_power_sensor(sensor::Sensor *s) { power_[0] = s; }
   void set_power_1_sensor(sensor::Sensor *s) { power_[1] = s; }
   void set_power_2_sensor(sensor::Sensor *s) { power_[2] = s; }
+  void set_power_3_sensor(sensor::Sensor *s) { power_[3] = s; }
+  void set_power_4_sensor(sensor::Sensor *s) { power_[4] = s; }
+  void set_power_5_sensor(sensor::Sensor *s) { power_[5] = s; }
+  void set_power_6_sensor(sensor::Sensor *s) { power_[6] = s; }
   void set_energy_sensor(sensor::Sensor *s) { energy_[0] = s; }
   void set_energy_1_sensor(sensor::Sensor *s) { energy_[1] = s; }
   void set_energy_2_sensor(sensor::Sensor *s) { energy_[2] = s; }
+  void set_energy_3_sensor(sensor::Sensor *s) { energy_[3] = s; }
+  void set_energy_4_sensor(sensor::Sensor *s) { energy_[4] = s; }
+  void set_energy_5_sensor(sensor::Sensor *s) { energy_[5] = s; }
+  void set_energy_6_sensor(sensor::Sensor *s) { energy_[6] = s; }
   void set_energy_exported_sensor(sensor::Sensor *s) { energy_exported_[0] = s; }
   void set_energy_exported_1_sensor(sensor::Sensor *s) { energy_exported_[1] = s; }
   void set_energy_exported_2_sensor(sensor::Sensor *s) { energy_exported_[2] = s; }
   void set_power_factor_sensor(sensor::Sensor *s) { pf_[0] = s; }
   void set_power_factor_1_sensor(sensor::Sensor *s) { pf_[1] = s; }
   void set_power_factor_2_sensor(sensor::Sensor *s) { pf_[2] = s; }
+  void set_power_factor_3_sensor(sensor::Sensor *s) { pf_[3] = s; }
+  void set_power_factor_4_sensor(sensor::Sensor *s) { pf_[4] = s; }
+  void set_power_factor_5_sensor(sensor::Sensor *s) { pf_[5] = s; }
+  void set_power_factor_6_sensor(sensor::Sensor *s) { pf_[6] = s; }
   void set_reactive_power_sensor(sensor::Sensor *s) { reactive_power_[0] = s; }
   void set_reactive_power_1_sensor(sensor::Sensor *s) { reactive_power_[1] = s; }
   void set_reactive_power_2_sensor(sensor::Sensor *s) { reactive_power_[2] = s; }
+  void set_reactive_power_3_sensor(sensor::Sensor *s) { reactive_power_[3] = s; }
+  void set_reactive_power_4_sensor(sensor::Sensor *s) { reactive_power_[4] = s; }
+  void set_reactive_power_5_sensor(sensor::Sensor *s) { reactive_power_[5] = s; }
+  void set_reactive_power_6_sensor(sensor::Sensor *s) { reactive_power_[6] = s; }
   void set_apparent_power_sensor(sensor::Sensor *s) { apparent_power_ = s; }
   void set_frequency_sensor(sensor::Sensor *s) { frequency_ = s; }
 
@@ -139,6 +167,30 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   bool read_u32_le_(uint8_t reg, uint32_t *out);
   bool write_u8_(uint8_t reg, uint8_t val);
 
+  // v1.5 — Channel access window helper. Reads a float32 field for a given
+  // channel via select-and-read protocol: writes REG_CHANNEL_SELECT with
+  // (field<<4)|ch, then reads 4 bytes at REG_CHANNEL_DATA (float LE).
+  // MUST re-select on every call — the data buffer is a snapshot at select
+  // time; repeat reads without re-select return the same stale snapshot.
+  // Public field codes: CHFIELD_I_RMS / _I_PEAK / _P_REAL / _PF / _PERIOD_AVG_P.
+  bool read_channel_window_float_(uint8_t field, uint8_t ch, float *out);
+
+  // v1.6 — Channel access window u8 write (CT_MODEL uses this). Sequence:
+  //   1. write REG_CHANNEL_SELECT = (field<<4)|ch
+  //   2. write REG_CHANNEL_DATA+0 = val
+  //   3. write REG_CHANNEL_DATA+1 = 0    (upper bytes zero-padded — burst not supported)
+  //   4. write REG_CHANNEL_DATA+2 = 0
+  //   5. write REG_CHANNEL_DATA+3 = 0
+  // Firmware applies the write on selector match. Unknown (class,model) pairs
+  // return ERR_PARAM 0xFE and the channel keeps its previous value —
+  // caller MUST read back via read_channel_window_u8_lo_ to confirm.
+  bool write_channel_window_u8_(uint8_t field, uint8_t ch, uint8_t val);
+
+  // v1.6 — Channel access window u8 read (low byte of the 4-byte data word).
+  // Convenience wrapper around read_u32_le_ that extracts the low byte —
+  // used for CT_MODEL readback verification after write.
+  bool read_channel_window_u8_lo_(uint8_t field, uint8_t ch, uint8_t *out);
+
   // High-level operations
   bool probe_slave_();
   void detect_variant_();
@@ -146,6 +198,14 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void apply_sensor_class_();
   void apply_ct_model_();
   void apply_ct_models_per_channel_();
+  // v1.6 CT_MODEL per-channel router (LESSONS L9 single-site guard).
+  // Both write helpers apply IN RAM ONLY — caller must issue a single
+  // save_user_config_() after the apply cycle to persist the whole
+  // ct_model_ch page. Flat-path (ch<3) for the 0x51-0x53 mirror set,
+  // window-path (ch>=3) via CHFIELD_CT_MODEL for senior channels.
+  bool ct_model_write_flat_(uint8_t ch, uint8_t code);
+  bool ct_model_write_via_window_(uint8_t ch, uint8_t code);
+  bool ct_model_read_(uint8_t ch, uint8_t *out);
   void apply_address_change_();
   void apply_fleet_config_();
   bool check_capability_(uint16_t bit);
@@ -171,7 +231,13 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   // Configuration state
   GPIOPin *drdy_pin_{nullptr};
   uint8_t ct_model_{0xFF};                 // global CT model (legacy / v1.0-compat path)
-  uint8_t ct_models_request_[3]{0xFF, 0xFF, 0xFF};  // per-channel CT model (v1.2+ path)
+  // Per-channel CT model. v1.6: 16-slot reserve — window selector nibble is
+  // 4 bits so the wire protocol allows ch 0..15. Runtime apply path only
+  // touches slots [0..n_channels_-1] detected from REG_TOPOLOGY, so extra
+  // YAML slots on a smaller variant are ignored with a warning.
+  uint8_t ct_models_request_[16]{
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t sensor_class_request_{0xFF};     // 0xFF = "not requested in YAML"; codegen sets to enum value (UNSET=0..BUILTIN_CT=3)
   bool bidirectional_{false};
   bool broadcast_latch_{false};
@@ -218,9 +284,14 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   // mixed-CT (UI3) partial-fail recovery: one channel's CT can clock-stretch
   // beyond timeout independently of the others; healthy channels continue
   // integrating without waiting on the unhealthy one.
-  bool primed_[3]{false, false, false};
-  uint32_t last_latch_ms_[3]{0, 0, 0};
-  double energy_total_wh_[3]{0.0, 0.0, 0.0};
+  // v1.5: extended to 7 slots for senior SKUs UI5 (5 ch) / UI7 (7 ch) — ch3-6
+  // integrate from PERIOD_AVG_P via channel-access window (CHFIELD_PERIOD_AVG_P
+  // = 13) after CMD_LATCH_PERIOD, same wall-clock dt integration as ch0-2.
+  bool primed_[7]{false, false, false, false, false, false, false};
+  uint32_t last_latch_ms_[7]{0, 0, 0, 0, 0, 0, 0};
+  double energy_total_wh_[7]{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  // energy_export_wh_ scoped to primary channel only (bidirectional feature
+  // for UI-class primary sense; senior SKUs use energy_total_wh_ for all ch).
   double energy_export_wh_[3]{0.0, 0.0, 0.0};
 
   // NVS persistence — Wh totals survive reboot. Save every SAVE_INTERVAL_MS
@@ -230,14 +301,16 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   uint32_t last_save_ms_{0};
   static constexpr uint32_t SAVE_INTERVAL_MS = 300000;  // 5 minutes
 
-  // Sensors — slot [0..2] maps to channels (SINGLE) or phases (SPLIT/THREE_PHASE)
+  // Sensors — slots for single-phase per-channel (v1.5: extended to 7 for
+  // senior SKUs UI5/UI7). voltage_ + energy_exported_ remain [3] (max 3 phases
+  // in SPLIT/THREE_PHASE topology; senior SKUs have one U + N I currents).
   sensor::Sensor *voltage_[3]{nullptr, nullptr, nullptr};
-  sensor::Sensor *current_[3]{nullptr, nullptr, nullptr};
-  sensor::Sensor *power_[3]{nullptr, nullptr, nullptr};
-  sensor::Sensor *energy_[3]{nullptr, nullptr, nullptr};
+  sensor::Sensor *current_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  sensor::Sensor *power_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  sensor::Sensor *energy_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   sensor::Sensor *energy_exported_[3]{nullptr, nullptr, nullptr};
-  sensor::Sensor *pf_[3]{nullptr, nullptr, nullptr};
-  sensor::Sensor *reactive_power_[3]{nullptr, nullptr, nullptr};
+  sensor::Sensor *pf_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  sensor::Sensor *reactive_power_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   sensor::Sensor *apparent_power_{nullptr};
   sensor::Sensor *frequency_{nullptr};
   sensor::Sensor *power_total_{nullptr};

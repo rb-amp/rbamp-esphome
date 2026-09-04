@@ -48,12 +48,29 @@ static constexpr uint8_t REG_CT_MODEL_CH2        = 0x53;
 
 // ---- AC / topology ----------------------------------------------------------
 static constexpr uint8_t REG_AC_FREQ             = 0x20;  // 50 or 60
-static constexpr uint8_t REG_TOPOLOGY            = 0x24;  // 1=SINGLE, 2=SPLIT_PHASE, 3=THREE_PHASE
+static constexpr uint8_t REG_TOPOLOGY            = 0x24;  // v1.5: number of I-channels {1,2,3,5,7}; 0=v1.0 fallback (use YAML hint)
 
 // ---- Fleet / multi-module --------------------------------------------------
 static constexpr uint8_t REG_FLEET_CONFIG        = 0x27;  // bit0=GC_ENABLE (effective after reset)
 static constexpr uint8_t REG_GROUP_ID            = 0x28;  // GC latch group filter (0 = all-call only)
 static constexpr uint8_t REG_GC_TICK             = 0x59;  // Master tick from last GC-latch (u16); 0xFFFF=never
+
+// ---- Channel access window (v1.5, senior SKUs UI5/UI7 ch3-6) ---------------
+// Flat block (0x86..0xD8) covers ch0-2 + U for backwards compat. Channels 3-6
+// on senior SKUs are read ONLY through this window. Re-select 0x32 before EVERY
+// data read — the data buffer is a snapshot at select time; repeat reads
+// without re-select return the same stale snapshot.
+static constexpr uint8_t REG_CHANNEL_SELECT      = 0x32;  // Write (field<<4)|ch  — field 0..3, 13, 14, 15; ch 0..15 (nibble)
+static constexpr uint8_t REG_CHANNEL_DATA        = 0x3C;  // 4-byte u32 LE at 0x3C..0x3F (four 1-byte regs; float32 for numeric fields)
+// Public field codes (fields 7-12 are private diagnostic; 14 = NF u16 LE currently read-only from library).
+static constexpr uint8_t CHFIELD_I_RMS           = 0;     // Live I_rms (window sweep = adjacent 20ms windows)
+static constexpr uint8_t CHFIELD_I_PEAK          = 1;     // Live I_peak per window
+static constexpr uint8_t CHFIELD_P_REAL          = 2;     // Live active power (mean u*i over window)
+static constexpr uint8_t CHFIELD_PF              = 3;     // Live power factor
+static constexpr uint8_t CHFIELD_NF              = 4;     // Noise floor (u16 LE, RW) — not driven from YAML currently
+static constexpr uint8_t CHFIELD_GAIN            = 5;     // Gain (RW) — per-preset value, not driven from YAML currently
+static constexpr uint8_t CHFIELD_PERIOD_AVG_P    = 13;    // FROZEN avg power (latched by CMD_LATCH_PERIOD); Wh source for ch3+
+static constexpr uint8_t CHFIELD_CT_MODEL        = 15;    // v1.6 (fw v1.4.18): CT model per channel (u8 RW, low byte of 0x3C; 0x3D..0x3F must be zero-padded on write)
 
 // ---- Digest / events / thresholds ------------------------------------------
 static constexpr uint8_t REG_DIGEST_CONFIG       = 0x29;  // Window composition bitmask (DIGEST_* bits)
@@ -76,7 +93,7 @@ static constexpr uint8_t REG_ZC_OFFSET           = 0x4E;  // u16 (U-variants onl
 
 // ---- Identity / capability --------------------------------------------------
 static constexpr uint8_t REG_PRODUCT_ID          = 0x54;  // 0x01=rbAmp sensor, 0x02=rbDimmer
-static constexpr uint8_t REG_HW_VARIANT          = 0x55;  // 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3
+static constexpr uint8_t REG_HW_VARIANT          = 0x55;  // 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3, 7=UI5, 8=UI7 (v1.5 firmware bd2ad8e)
 static constexpr uint8_t REG_FW_TIER             = 0x56;  // bits0-1: 0=BASIC,1=STANDARD,2=PRO; bit2=bidir; bit3=LUT-cal
 static constexpr uint8_t REG_CAPABILITY          = 0x57;  // u16 feature bitmap
 static constexpr uint8_t REG_UID                 = 0x5C;  // 96-bit (12 bytes)

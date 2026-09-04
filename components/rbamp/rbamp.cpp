@@ -99,6 +99,50 @@ bool RbAmpComponent::write_u8_(uint8_t reg, uint8_t val) {
   return this->write_register(reg, &val, 1) == i2c::ERROR_OK;
 }
 
+// v1.5 — Channel access window: select-and-read protocol for ch3+ on senior
+// SKUs (UI5/UI7). Fields 0=I_RMS, 1=I_PEAK, 2=P_REAL, 3=PF, 13=PERIOD_AVG_P.
+// Fields 4-12 are private (perimeter §3) — never used from library layer.
+//
+// CRITICAL: re-select on EVERY read. The window data buffer holds a snapshot
+// captured at select time; re-reading REG_CHANNEL_DATA without a new select
+// returns the same stale snapshot. There is no way to cache the selector for
+// speed — the protocol is designed to force per-value select+read atomicity.
+bool RbAmpComponent::read_channel_window_float_(uint8_t field, uint8_t ch, float *out) {
+  const uint8_t sel = static_cast<uint8_t>((field << 4) | (ch & 0x0F));
+  if (!this->write_u8_(REG_CHANNEL_SELECT, sel)) {
+    return false;
+  }
+  // 4-byte float32 LE at REG_CHANNEL_DATA..REG_CHANNEL_DATA+3.
+  // read_float_le_ handles the 4 separate 1-byte reads under the hood
+  // (this device has no auto-increment; ANY multi-byte read requires that).
+  return this->read_float_le_(REG_CHANNEL_DATA, out);
+}
+
+// v1.6 — Channel access window u8 write. Used exclusively for
+// CHFIELD_CT_MODEL (field 15) today; NF (field 4) + GAIN (field 5) will
+// take the same path when exposed. The high 3 bytes of REG_CHANNEL_DATA
+// MUST be zero-padded — firmware reads the full 4-byte word on selector
+// match; a stale byte in 0x3D..0x3F would corrupt the applied value.
+// Every byte is its own transaction — the device has no auto-increment.
+bool RbAmpComponent::write_channel_window_u8_(uint8_t field, uint8_t ch, uint8_t val) {
+  const uint8_t sel = static_cast<uint8_t>((field << 4) | (ch & 0x0F));
+  if (!this->write_u8_(REG_CHANNEL_SELECT, sel)) return false;
+  if (!this->write_u8_(REG_CHANNEL_DATA + 0, val)) return false;
+  if (!this->write_u8_(REG_CHANNEL_DATA + 1, 0)) return false;
+  if (!this->write_u8_(REG_CHANNEL_DATA + 2, 0)) return false;
+  if (!this->write_u8_(REG_CHANNEL_DATA + 3, 0)) return false;
+  return true;
+}
+
+bool RbAmpComponent::read_channel_window_u8_lo_(uint8_t field, uint8_t ch, uint8_t *out) {
+  const uint8_t sel = static_cast<uint8_t>((field << 4) | (ch & 0x0F));
+  if (!this->write_u8_(REG_CHANNEL_SELECT, sel)) return false;
+  uint32_t word = 0;
+  if (!this->read_u32_le_(REG_CHANNEL_DATA, &word)) return false;
+  *out = static_cast<uint8_t>(word & 0xFF);
+  return true;
+}
+
 // ============================================================================
 // High-level operations — stubs in m1
 // ============================================================================
@@ -137,31 +181,51 @@ bool RbAmpComponent::probe_slave_() {
 }
 
 void RbAmpComponent::detect_variant_() {
-  // v1 firmware (REG_VERSION == 0x01) exposes no REG_TOPOLOGY byte and never
-  // NACKs unmapped reads (see libs/spec/SPEC.md §8 + src/modules/i2c_driver.c:
-  // unmapped reads return 0x00, indistinguishable from float +0.0). The
-  // original NACK-probe approach over-detected channels — dropped.
-  //
-  // Topology comes from the YAML `topology:` hint (default SINGLE — matches
-  // every shipping v1 SKU). When v1.1 firmware adds REG_TOPOLOGY, this branch
-  // will read it preferentially and treat the hint as fallback.
+  // Topology hint (YAML `topology:` — SINGLE/SPLIT/THREE) — informational only
+  // for the SINGLE/SPLIT/THREE_PHASE enum. Actual channel count now comes from
+  // REG_TOPOLOGY on v1.3+ firmware (see below).
   this->topology_ = this->topology_hint_;
 
-  // Channel count and voltage presence are derived from which sensor slots
-  // the user declared in YAML. The schema validator already enforces that
-  // power_N/energy_N/etc. require current_N at the same slot and a voltage if
-  // applicable, so this derivation is well-defined regardless of the topology
-  // hint above.
-  if (this->current_[2] != nullptr) {
-    this->n_channels_ = 3;
-  } else if (this->current_[1] != nullptr) {
-    this->n_channels_ = 2;
-  } else if (this->current_[0] != nullptr) {
-    this->n_channels_ = 1;
+  // v1.5 (fw bd2ad8e+): REG_TOPOLOGY 0x24 = number of I-channels {1,2,3,5,7}.
+  // 0x00 = v1.0 firmware fallback — derive from YAML sensor slots as before.
+  uint8_t reg_topo = 0;
+  bool topo_ok = this->read_u8_(REG_TOPOLOGY, &reg_topo);
+  if (topo_ok && (reg_topo == 1 || reg_topo == 2 || reg_topo == 3 ||
+                  reg_topo == 5 || reg_topo == 7)) {
+    // Device-reported truth wins over YAML-slot count.
+    this->n_channels_ = reg_topo;
   } else {
-    this->n_channels_ = 0;  // voltage-only / frequency-only deployment
+    // v1.0 fallback OR unexpected value → derive from declared YAML slots.
+    // Walk highest-to-lowest to find topmost populated current_ slot.
+    this->n_channels_ = 0;
+    for (int8_t ch = 6; ch >= 0; ch--) {
+      if (this->current_[ch] != nullptr) {
+        this->n_channels_ = ch + 1;
+        break;
+      }
+    }
   }
-  this->has_voltage_ = (this->voltage_[0] != nullptr);
+
+  // v1.5 has_voltage_ derivation: fw bd2ad8e HW_VARIANT 0x55 codes with U
+  // present = {1,2,3,7,8}; without U = {4,5,6}. If HW_VARIANT read fails or
+  // v1.0 firmware, fall back to YAML `voltage:` declaration.
+  uint8_t hw_variant = 0;
+  if (this->read_u8_(REG_HW_VARIANT, &hw_variant)) {
+    switch (hw_variant) {
+      case 1: case 2: case 3: case 7: case 8:
+        this->has_voltage_ = true;
+        break;
+      case 4: case 5: case 6:
+        this->has_voltage_ = false;
+        break;
+      default:
+        // Unknown variant (0x00 v1.0 fallback, or reserved 9+) → YAML truth.
+        this->has_voltage_ = (this->voltage_[0] != nullptr);
+        break;
+    }
+  } else {
+    this->has_voltage_ = (this->voltage_[0] != nullptr);
+  }
 }
 
 void RbAmpComponent::load_prefs_() {
@@ -195,27 +259,35 @@ void RbAmpComponent::load_prefs_() {
   // is the only shipping tier; the guard reads as "drop garbage" today and
   // becomes "drop garbage but keep negative net" when STANDARD lands.
   // Truth-doc §9.2 HOLD-resolved → revisit signedness handling at that point.
-  for (uint8_t ch = 0; ch < 3; ch++) {
+  // v1.5: restore all 7 slots; ch3-6 will be 0.0 on fresh v1.5 prefs, or
+  // preserved from prior v1.5+ boots if migrating in-place.
+  for (uint8_t ch = 0; ch < 7; ch++) {
     double e = saved.energy_total_wh[ch];
     if (std::isfinite(e) && e >= 0.0) {
       this->energy_total_wh_[ch] = e;
     }
+  }
+  for (uint8_t ch = 0; ch < 3; ch++) {
     double x = saved.energy_export_wh[ch];
     if (std::isfinite(x) && x >= 0.0) {
       this->energy_export_wh_[ch] = x;
     }
   }
   ESP_LOGCONFIG(TAG,
-                "  Restored Wh from NVS: total[%.3f, %.3f, %.3f] export[%.3f, %.3f, %.3f]",
+                "  Restored Wh from NVS: total[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f] export[%.3f, %.3f, %.3f]",
                 this->energy_total_wh_[0], this->energy_total_wh_[1],
-                this->energy_total_wh_[2], this->energy_export_wh_[0],
+                this->energy_total_wh_[2], this->energy_total_wh_[3],
+                this->energy_total_wh_[4], this->energy_total_wh_[5],
+                this->energy_total_wh_[6], this->energy_export_wh_[0],
                 this->energy_export_wh_[1], this->energy_export_wh_[2]);
 }
 
 void RbAmpComponent::save_prefs_() {
   RbAmpPrefData data{};
-  for (uint8_t ch = 0; ch < 3; ch++) {
+  for (uint8_t ch = 0; ch < 7; ch++) {
     data.energy_total_wh[ch] = this->energy_total_wh_[ch];
+  }
+  for (uint8_t ch = 0; ch < 3; ch++) {
     data.energy_export_wh[ch] = this->energy_export_wh_[ch];
   }
   if (this->energy_pref_.save(&data)) {
@@ -226,7 +298,7 @@ void RbAmpComponent::save_prefs_() {
   }
 }
 
-// Production firmware (REG_MODE = 0) refuses flash-writing operations from
+// Production firmware refuses flash-writing operations from
 // the master. The device must be in its factory-provisioning mode for
 // CMD_SAVE_GAINS / address-change / sensor_class writes to take effect.
 bool RbAmpComponent::check_factory_mode_(const char *op_name) {
@@ -238,7 +310,7 @@ bool RbAmpComponent::check_factory_mode_(const char *op_name) {
   if (mode == 0) {
     ESP_LOGW(TAG,
              "%s requires the device's factory-provisioning mode "
-             "(REG_MODE=1, got 0). Standard production modules will refuse "
+             "Standard production modules will refuse "
              "this operation. To enable factory mode, see the device's "
              "hardware documentation or contact the manufacturer.",
              op_name);
@@ -338,104 +410,166 @@ void RbAmpComponent::apply_sensor_class_() {
                 "  SENSOR_CLASS persisted; remove `sensor_class:` from YAML after verification");
 }
 
+// v1.6 route-fanout single-site (LESSONS L9): all per-channel CT_MODEL
+// I/O passes through these two helpers, so adding future window fields
+// (NF, GAIN) reuses the flat-vs-window dispatch instead of copy-pasting a
+// guard at each publisher. Both helpers take the FULL channel index (0..15)
+// and internally pick the transport by ch<3 vs ch>=3.
+//
+// v1.4.18+ firmware (root contract 2026-09-04T15:40Z):
+//   - Write of CT_MODEL (both paths) applies the preset IN RAM ONLY.
+//     Persistence requires one CMD_SAVE_USER_CONFIG after the apply cycle.
+//   - Firmware persists the entire ct_model_ch page atomically — a single
+//     SAVE at the end covers ch0-15 regardless of which paths were used.
+//   - ch<3 : legacy flat path — writes go via REG_CT_MODEL scratch +
+//     CMD_SET_CT_MODEL_CH0/1/2 opcode; reads go via REG_CT_MODEL_CH0..2
+//     (0x51-0x53). Backwards-compat with v1.0/v1.3 firmware where the
+//     window's field 15 does not exist.
+//   - ch>=3 : window path — writes go via CHFIELD_CT_MODEL (field 15),
+//     reads via same field. RAM-only until SAVE.
+//
+// Read-back verify (root RELEASE contract §6): every write is confirmed by
+// a readback of the same channel. Mismatch → surface ERR_PARAM to the user
+// via ESP_LOGE, do NOT mark_failed() (so the rest of the fleet keeps
+// booting even if one CT-model line is wrong).
+static constexpr uint8_t CT_MODEL_PER_CH_CMD_[3] = {
+    CMD_SET_CT_MODEL_CH0,
+    CMD_SET_CT_MODEL_CH1,
+    CMD_SET_CT_MODEL_CH2,
+};
+
 void RbAmpComponent::apply_ct_models_per_channel_() {
-  // S4 read-compare-write: REG_CT_MODEL_CH0/1/2 (0x51-0x53) are v1.3 read-back
-  // mirrors that report the actually-applied model per channel. Skip the
-  // entire per-channel write sequence (3 × 700 ms flash erase = ~2.1 s)
-  // if all requested channels already match the device-side state.
-  // On legacy firmware where 0x51-0x53 are unmapped (returns 0): the
-  // comparison fails for any non-zero requested code → write proceeds.
-  uint8_t current_ch[3] = {0, 0, 0};
+  // Read-compare-write skip: if every requested channel already matches the
+  // device-side state, avoid the multi-second flash-erase sequence entirely.
+  // Uses the same ct_model_read_ router as post-write verify, so the flat
+  // vs window dispatch is single-site.
+  const uint8_t n = this->n_channels_ > 0 ? this->n_channels_ : 1;
+  uint8_t current[16] = {0};
   bool readback_ok = true;
-  for (uint8_t ch = 0; ch < 3; ch++) {
-    if (!this->read_u8_(REG_CT_MODEL_CH0 + ch, &current_ch[ch])) {
+  for (uint8_t ch = 0; ch < n && ch < 16; ch++) {
+    if (!this->ct_model_read_(ch, &current[ch])) {
       readback_ok = false;
       break;
     }
   }
   if (readback_ok) {
     bool all_match = true;
-    for (uint8_t ch = 0; ch < 3; ch++) {
+    for (uint8_t ch = 0; ch < n && ch < 16; ch++) {
       const uint8_t requested = this->ct_models_request_[ch];
-      if (requested == 0xFF) continue;  // not requested in YAML; no constraint
-      if (current_ch[ch] != requested) {
-        all_match = false;
-        break;
-      }
+      if (requested == 0xFF) continue;
+      if (current[ch] != requested) { all_match = false; break; }
     }
     if (all_match) {
       ESP_LOGD(TAG, "Per-channel CT models already match device state "
-               "[ch0=0x%02X ch1=0x%02X ch2=0x%02X] — no write needed (read-compare-write skip)",
-               current_ch[0], current_ch[1], current_ch[2]);
+               "(n_channels=%u) — no write needed (read-compare-write skip)", n);
       return;
     }
-    ESP_LOGCONFIG(TAG,
-                  "  Per-channel CT models differ from device state — applying writes "
-                  "[device: ch0=0x%02X ch1=0x%02X ch2=0x%02X, requested: ch0=0x%02X ch1=0x%02X ch2=0x%02X]",
-                  current_ch[0], current_ch[1], current_ch[2],
-                  this->ct_models_request_[0], this->ct_models_request_[1],
-                  this->ct_models_request_[2]);
+    ESP_LOGCONFIG(TAG, "  Per-channel CT models differ from device state — applying writes (n_channels=%u)", n);
   } else {
-    ESP_LOGD(TAG, "REG_CT_MODEL_CH0/1/2 unreadable (legacy firmware?) — applying writes unconditionally");
+    ESP_LOGD(TAG, "CT model readback unavailable (legacy firmware or bus error) — applying writes unconditionally");
   }
 
-  if (!this->check_factory_mode_("Per-channel CT model write")) {
-    return;
+  if (!this->check_factory_mode_("Per-channel CT model write")) return;
+
+  // Warn on stale YAML slots past the detected channel count. Non-fatal —
+  // a UI7 YAML applied to a UI1 board should still boot with ch0 written
+  // and slots ch1..ch6 politely ignored.
+  for (uint8_t ch = n; ch < 16; ch++) {
+    if (this->ct_models_request_[ch] != 0xFF) {
+      ESP_LOGW(TAG,
+               "  ct_models[%u] = 0x%02X set in YAML but variant has only %u channel(s) — slot ignored",
+               ch, this->ct_models_request_[ch], n);
+    }
   }
 
-  // Canon per-channel write sequence (truth-doc §7 + arduino + esp-idf):
-  //   1. write REG_CT_MODEL = code  (scratch register)
-  //   2. write REG_COMMAND  = CMD_SET_CT_MODEL_CHn  (opcode latches scratch to ch n)
-  //   3. sleep SETTLE_MS_SET_CT_MODEL_CHN (5 ms — chip latches to channel storage)
-  //   4. write REG_COMMAND  = CMD_SAVE_GAINS  (persist to flash; S4 will switch
-  //      to CMD_SAVE_USER_CONFIG once capability-gated for v1.0-v1.2 compat)
-  //   5. sleep SETTLE_MS_SAVE_GAINS (700 ms flash erase + write)
-  //
-  // Channel iteration order is DESCENDING (ch2 → ch1 → ch0). Rationale: the
-  // CT_MODEL scratch is shared; once SAVE_GAINS fires after each
-  // CMD_SET_CT_MODEL_CHn, the per-channel storage is committed and subsequent
-  // iterations don't disturb it. Descending keeps ch0 as the LAST write so a
-  // mid-sequence master reset would leave ch0 (the most common single-channel
-  // SKU) in the operator-intended state rather than zeroed.
-  //
-  // Verification: REG_CT_MODEL_CH0/1/2 (0x51-0x53) expose the actually-applied
-  // model per channel for post-write readback. S4 will use them for the
-  // read-compare-write boot-time optimization (docs #2).
-  //
-  // L7 (cross-canon verify): the previous impl had the order INVERTED
-  // (CMD_SET_CT_MODEL_CHn first, then REG_CT_MODEL=code, then SAVE_GAINS).
-  // The descending iteration was originally justified as compensating for a
-  // "ch0 clobber side-effect" — that was a misread of the chip's scratch-
-  // register semantics. The actual canon is: REG_CT_MODEL is the input to
-  // each CMD_SET_CT_MODEL_CHn opcode, so it must be written FIRST per channel.
-  // Descending iteration is still preserved (different rationale above).
-  static constexpr uint8_t PER_CH_CMD[3] = {
-      CMD_SET_CT_MODEL_CH0,
-      CMD_SET_CT_MODEL_CH1,
-      CMD_SET_CT_MODEL_CH2,
-  };
-  for (int8_t ch = 2; ch >= 0; --ch) {
+  // Descending order is preserved from the pre-v1.6 impl (protects ch0's
+  // final-write state against mid-sequence master reset on multi-channel
+  // parts). Router itself picks flat vs window; the loop is unaware.
+  bool any_write_applied = false;
+  for (int16_t ch = static_cast<int16_t>(n) - 1; ch >= 0; --ch) {
     const uint8_t code = this->ct_models_request_[ch];
-    if (code == 0xFF) {
-      continue;  // channel not requested in YAML
-    }
-    ESP_LOGCONFIG(TAG, "  Writing CT_MODEL ch%d = 0x%02X (canon: REG_CT_MODEL -> CMD_SET_CT_MODEL_CH%d -> SAVE_USER_CONFIG)", ch, code, ch);
-    if (!this->write_u8_(REG_CT_MODEL, code)) {
-      ESP_LOGW(TAG, "Write of REG_CT_MODEL=0x%02X for ch%d failed", code, ch);
+    if (code == 0xFF) continue;
+
+    const bool via_window = (ch >= 3);
+    ESP_LOGCONFIG(TAG, "  Writing CT_MODEL ch%d = 0x%02X (%s path)", ch, code,
+                  via_window ? "window field 15" : "flat 0x51+CMD");
+
+    const bool write_ok = via_window
+        ? this->ct_model_write_via_window_(static_cast<uint8_t>(ch), code)
+        : this->ct_model_write_flat_(static_cast<uint8_t>(ch), code);
+    if (!write_ok) {
+      ESP_LOGW(TAG, "  CT_MODEL ch%d write returned bus error — skipping verify", ch);
       continue;
     }
-    if (!this->write_u8_(REG_COMMAND, PER_CH_CMD[ch])) {
-      ESP_LOGW(TAG, "CMD_SET_CT_MODEL_CH%d failed", ch);
+
+    // Read-back verify per root contract §6. Mismatch = ERR_PARAM 0xFE
+    // (firmware kept prior model). Surface without mark_failed — one bad
+    // CT-model row shouldn't stop the rest of the fleet.
+    uint8_t applied = 0;
+    if (!this->ct_model_read_(static_cast<uint8_t>(ch), &applied)) {
+      ESP_LOGW(TAG, "  CT_MODEL ch%d readback failed — cannot confirm apply", ch);
       continue;
     }
-    delay(SETTLE_MS_SET_CT_MODEL_CHN);
-    if (!this->save_user_config_()) {
-      ESP_LOGW(TAG, "Save for ch%d failed; CT model not persisted", ch);
+    if (applied != code) {
+      ESP_LOGE(TAG,
+               "  CT_MODEL ch%d write REJECTED by firmware: requested 0x%02X, "
+               "applied 0x%02X (unchanged) — ERR_PARAM. Check sensor_class + "
+               "model code against libs/spec/sensor_models.yaml.",
+               ch, code, applied);
       continue;
+    }
+    ESP_LOGCONFIG(TAG, "  CT_MODEL ch%d = 0x%02X confirmed by readback", ch, code);
+    any_write_applied = true;
+  }
+
+  // Persist the whole ct_model_ch page in one shot after the apply cycle.
+  // Firmware serializes the write; a per-channel SAVE would be 3× 700 ms
+  // flash erase for no benefit, and the window path (ch>=3) is RAM-only
+  // without this step — omitting SAVE causes silent zeroed models on the
+  // senior channels after any DUT power cycle (root contract 2026-09-04T15:40Z).
+  if (any_write_applied) {
+    if (this->save_user_config_()) {
+      ESP_LOGCONFIG(TAG, "  Per-channel CT models persisted (single SAVE_USER_CONFIG); "
+                    "remove `ct_models:` from YAML after verification");
+    } else {
+      ESP_LOGE(TAG, "  SAVE_USER_CONFIG failed after apply cycle — CT models APPLIED "
+               "IN RAM ONLY and will revert on DUT power-cycle. Investigate.");
     }
   }
-  ESP_LOGCONFIG(TAG,
-                "  Per-channel CT models persisted; remove `ct_models:` from YAML after verification");
+}
+
+// Flat-path CT_MODEL write for ch0..2. RAM-only apply (REG_CT_MODEL
+// scratch → CMD_SET_CT_MODEL_CHn → settle); persistence is caller's
+// responsibility via a single trailing save_user_config_() covering the
+// whole ct_model_ch page. Only used from apply_ct_models_per_channel_.
+bool RbAmpComponent::ct_model_write_flat_(uint8_t ch, uint8_t code) {
+  if (ch >= 3) return false;
+  if (!this->write_u8_(REG_CT_MODEL, code)) {
+    ESP_LOGW(TAG, "  Write of REG_CT_MODEL=0x%02X for ch%u failed", code, ch);
+    return false;
+  }
+  if (!this->write_u8_(REG_COMMAND, CT_MODEL_PER_CH_CMD_[ch])) {
+    ESP_LOGW(TAG, "  CMD_SET_CT_MODEL_CH%u failed", ch);
+    return false;
+  }
+  delay(SETTLE_MS_SET_CT_MODEL_CHN);
+  return true;
+}
+
+// Window-path CT_MODEL write for ch3..15 (v1.6, requires fw v1.4.18+).
+// RAM-only apply — persistence is caller's responsibility.
+bool RbAmpComponent::ct_model_write_via_window_(uint8_t ch, uint8_t code) {
+  return this->write_channel_window_u8_(CHFIELD_CT_MODEL, ch, code);
+}
+
+// Internal router: read the currently-applied CT model for `ch`. ch<3 uses
+// the flat mirrors 0x51-0x53 (legacy-firmware compatible), ch>=3 uses the
+// window field 15.
+bool RbAmpComponent::ct_model_read_(uint8_t ch, uint8_t *out) {
+  if (ch < 3) {
+    return this->read_u8_(REG_CT_MODEL_CH0 + ch, out);
+  }
+  return this->read_channel_window_u8_lo_(CHFIELD_CT_MODEL, ch, out);
 }
 
 bool RbAmpComponent::check_capability_(uint16_t bit) {
@@ -606,6 +740,8 @@ std::string RbAmpComponent::get_variant_str() {
     case 4: return "I1";
     case 5: return "I2";
     case 6: return "I3";
+    case 7: return "UI5";
+    case 8: return "UI7";
     default: return "UNK";
   }
 }
@@ -834,10 +970,25 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
   bool any_integrated = false;
   for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
     float avg_p = 0.0f;
-    if (!this->read_float_le_(AVG_P_ADDR[ch], &avg_p) || !sanity_power_(avg_p)) {
-      ESP_LOGW(TAG, "Failed to read or validate PERIOD_AVG_P[%u] at 0x%02X — channel %u stays at previous integration window",
-               ch, AVG_P_ADDR[ch], ch);
-      continue;  // skip ch — next cycle's dt spans the gap
+    bool avg_p_ok;
+    if (ch < 3) {
+      // Flat block path (backwards compat)
+      avg_p_ok = this->read_float_le_(AVG_P_ADDR[ch], &avg_p) && sanity_power_(avg_p);
+      if (!avg_p_ok) {
+        ESP_LOGW(TAG, "Failed to read or validate PERIOD_AVG_P[%u] at 0x%02X — channel %u stays at previous integration window",
+                 ch, AVG_P_ADDR[ch], ch);
+        continue;
+      }
+    } else {
+      // v1.5 — Channel access window: field 13 = CHFIELD_PERIOD_AVG_P holds
+      // the CMD_LATCH_PERIOD-frozen average power per channel (senior SKUs
+      // UI5/UI7 ch3-6). Chip-side atomic latch on same instant as flat ch0-2.
+      avg_p_ok = this->read_channel_window_float_(CHFIELD_PERIOD_AVG_P, ch, &avg_p)
+                 && sanity_power_(avg_p);
+      if (!avg_p_ok) {
+        ESP_LOGW(TAG, "Failed to read or validate PERIOD_AVG_P via window field=13 ch=%u — channel stays at previous integration window", ch);
+        continue;
+      }
     }
 
     // First successful read for this channel after boot: prime the clock,
@@ -859,7 +1010,10 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
       this->energy_[ch]->publish_state((float) this->energy_total_wh_[ch]);
     }
 
-    if (this->bidirectional_ && REG_PERIOD_AVG_P_NEG[ch] != 0xFF) {
+    // Bidirectional export — flat-block-only path (senior SKUs UI5/UI7 do not
+    // expose per-channel export in the current firmware; feature scope stays
+    // on primary channel ch0-2).
+    if (ch < 3 && this->bidirectional_ && REG_PERIOD_AVG_P_NEG[ch] != 0xFF) {
       float avg_p_neg = 0.0f;
       if (this->read_float_le_(REG_PERIOD_AVG_P_NEG[ch], &avg_p_neg) && sanity_power_(avg_p_neg)) {
         this->energy_export_wh_[ch] += (double) avg_p_neg * dt_s / 3600.0;
@@ -1024,6 +1178,9 @@ void RbAmpComponent::publish_rt_block_() {
     }
   }
 
+  // Flat block covers ch0-2 (senior SKUs ch3-6 read through the channel window
+  // below — see read_channel_window_float_ + rbamp_const.h Channel access
+  // window block).
   static constexpr uint8_t I_RMS_ADDR[3] = {REG_I0_RMS, REG_I1_RMS, REG_I2_RMS};
   static constexpr uint8_t P_REAL_ADDR[3] = {REG_P0_REAL, REG_P1_REAL, REG_P2_REAL};
   static constexpr uint8_t PF_ADDR[3] = {REG_PF0, REG_PF1, REG_PF2};
@@ -1033,7 +1190,15 @@ void RbAmpComponent::publish_rt_block_() {
   bool i_rms_ch0_ok = false;
   for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
     float i_rms = 0.0f;
-    if (this->read_float_le_(I_RMS_ADDR[ch], &i_rms) && sanity_current_(i_rms)) {
+    bool i_rms_ok;
+    if (ch < 3) {
+      // Flat block path (backwards compat — single fast burst on shared bus)
+      i_rms_ok = this->read_float_le_(I_RMS_ADDR[ch], &i_rms) && sanity_current_(i_rms);
+    } else {
+      // Channel access window (senior SKU ch3-6): select + read, re-select every call
+      i_rms_ok = this->read_channel_window_float_(CHFIELD_I_RMS, ch, &i_rms) && sanity_current_(i_rms);
+    }
+    if (i_rms_ok) {
       if (this->current_[ch] != nullptr) {
         this->current_[ch]->publish_state(i_rms);
       }
@@ -1046,21 +1211,31 @@ void RbAmpComponent::publish_rt_block_() {
     if (this->has_voltage_) {
       // P/PF/Q only meaningful when voltage is sampled
       float p_real = 0.0f;
-      if (this->read_float_le_(P_REAL_ADDR[ch], &p_real) && sanity_power_(p_real)
-          && this->power_[ch] != nullptr) {
+      bool p_ok = (ch < 3)
+                  ? this->read_float_le_(P_REAL_ADDR[ch], &p_real)
+                  : this->read_channel_window_float_(CHFIELD_P_REAL, ch, &p_real);
+      if (p_ok && sanity_power_(p_real) && this->power_[ch] != nullptr) {
         this->power_[ch]->publish_state(p_real);
       }
 
       float pf = 0.0f;
-      if (this->read_float_le_(PF_ADDR[ch], &pf) && sanity_pf_(pf)
-          && this->pf_[ch] != nullptr) {
+      bool pf_ok = (ch < 3)
+                   ? this->read_float_le_(PF_ADDR[ch], &pf)
+                   : this->read_channel_window_float_(CHFIELD_PF, ch, &pf);
+      if (pf_ok && sanity_pf_(pf) && this->pf_[ch] != nullptr) {
         this->pf_[ch]->publish_state(pf);
       }
 
-      float q = 0.0f;
-      if (this->read_float_le_(Q_ADDR[ch], &q) && sanity_power_(q)
-          && this->reactive_power_[ch] != nullptr) {
-        this->reactive_power_[ch]->publish_state(q);
+      // Reactive power (Q) — only exposed in the flat block (ch0-2). Not
+      // available via the public channel window (fields 4-12 private per
+      // perimeter §3). Skip Q publish on ch3+ — schema-declared sensors on
+      // those slots stay at NaN (HA renders "unknown"). Documented behaviour.
+      if (ch < 3) {
+        float q = 0.0f;
+        if (this->read_float_le_(Q_ADDR[ch], &q) && sanity_power_(q)
+            && this->reactive_power_[ch] != nullptr) {
+          this->reactive_power_[ch]->publish_state(q);
+        }
       }
     }
   }
