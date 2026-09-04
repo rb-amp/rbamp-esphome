@@ -26,7 +26,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/rb-amp/rbamp-esphome
-      ref: v1.3.0
+      ref: v1.6.0
     components: [rbamp]
 ```
 
@@ -73,7 +73,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
-- **v1.3.0** — initial public release. ESPHome external component for the rbAmp v1.3 wire protocol:
-  multi-channel + multi-module fleet with general-call latch synchronization, two-phase address
-  commit, read-compare-write boot writeback, capability-gated feature detection. Validated 21/21 on
-  bench hardware (mixed UI1/I2/I3 fleet).
+- **v1.6.0** — per-channel `ct_models:` for all channels (0..15), sensor-model registry, persist
+  fix (CT model binding now survives reboot on production modules). Firmware: v1.4.18+.
+- **v1.5.0** — UI5/UI7 senior-SKU support, expanded per-channel period energy.
+- **v1.4.0** — senior-SKU detection (5/7-channel variants), channel-access window for RT metrics.
+- **v1.3.0** — initial public release. Multi-channel + multi-module fleet with general-call latch
+  synchronization, two-phase address commit, read-compare-write boot writeback, capability-gated
+  feature detection.
