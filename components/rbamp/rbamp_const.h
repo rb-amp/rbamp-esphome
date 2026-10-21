@@ -19,7 +19,7 @@
  *   2. Compare to the SHA above. If different, audit the diff and update
  *      this file + bump the SHA comment.
  *   3. If the upstream schema CRC also changed, that's the API-BREAK signal —
- *      revisit codegen-tier coordination via baton to root.
+ *      coordinate the update with the upstream register-map owner.
  *
  * If a register/command needed by ESPHome is missing from this file, ADD IT
  * here from upstream — do NOT inline magic constants in rbamp.cpp.
@@ -146,6 +146,13 @@ static constexpr uint8_t CMD_UID_PRESENT         = 0x35;
 static constexpr uint8_t CMD_UID_MUTE_RESET      = 0x36;
 static constexpr uint8_t CMD_FACTORY_RESET       = 0xAA;
 
+// ---- Applied current gain (float32 LE) — the gain the module applies right
+// now. The component only READS these (input to the SCT rating-switch
+// correction, see rbamp_sct_rating.h); ch3+ reads via window field 5.
+static constexpr uint8_t REG_I0_GAIN             = 0xF4;
+static constexpr uint8_t REG_I1_GAIN             = 0xF8;
+static constexpr uint8_t REG_I2_GAIN             = 0xFC;
+
 // ---- Command settle times (ms) — non-zero ones used by ESPHome -------------
 static constexpr uint32_t SETTLE_MS_RESET            = 300;
 static constexpr uint32_t SETTLE_MS_SAVE_GAINS       = 700;
@@ -178,6 +185,10 @@ static constexpr uint16_t CAP_ZC_PHASE_OFFSET    = (1u << 8);
 static constexpr uint16_t CAP_SAVE_USER_CONFIG   = (1u << 9);
 static constexpr uint16_t CAP_CLEAR_ERROR        = (1u << 10);
 static constexpr uint16_t CAP_IAP                = (1u << 11);
+// fw performs the SCT rating switch on-device (G = preset(X)·c(X)·k on a
+// model write, survives restart) — the master-side correction in
+// rbamp_sct_rating.h then stays off and a plain model write is enough.
+static constexpr uint16_t CAP_SCT_RATING_SELF    = (1u << 12);
 
 // ---- EVENT_FLAGS (0x2A) / EVENT_MASK (0x2B) bits ----------------------------
 static constexpr uint8_t EVENT_PERIOD_READY      = (1u << 0);

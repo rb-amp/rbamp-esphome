@@ -23,7 +23,7 @@ MULTI_CONF = True
 # at major.minor for wire-level bumps; minor bumps here can also cover
 # component-only feature additions (e.g. v1.4 adds `latch_interval:` YAML key
 # without any wire-protocol change).
-VERSION = "1.6.0"
+VERSION = "1.9.0"
 
 rbamp_ns = cg.esphome_ns.namespace("rbamp")
 RbAmpComponent = rbamp_ns.class_(
@@ -33,6 +33,12 @@ RbAmpComponent = rbamp_ns.class_(
 CONF_DRDY_PIN = "drdy_pin"
 CONF_CT_MODEL = "ct_model"
 CONF_CT_MODELS = "ct_models"
+# v1.8.1 service option. A module calibrated with its fitted sensor (device
+# sensor class WIRED_CT/BUILTIN_CT) refuses CT model writes from YAML — the
+# write would replace its individual calibration with the generic preset.
+# `ct_model_force: true` overrides the refusal AND the read-compare skip
+# (deliberate preset re-apply). Service use only; remove after the operation.
+CONF_CT_MODEL_FORCE = "ct_model_force"
 CONF_SENSOR_CLASS = "sensor_class"
 CONF_BIDIRECTIONAL = "bidirectional"
 CONF_NEW_ADDRESS = "new_address"
@@ -56,12 +62,35 @@ CONF_GROUP_ID = "group_id"
 # When unset (v1.3.0 default), latch cadence equals update_interval — the
 # original behaviour, backwards-compatible with existing YAML.
 #
-# Forward-compat note: STANDARD-tier firmware (F403, roadmap) will expose 8
-# independent period accumulators (windowed via REG_PERIOD_SEL/COMMIT). A
-# future v1.5 will accept `latch_intervals:` as a list of `{period_id,
-# interval}` entries; scalar form here normalises to period_id=0 today and
-# will continue to work as the primary period on STANDARD firmware.
+# Forward-compat note: STANDARD-tier firmware exposes 8 independent period
+# accumulators (windowed via REG_PERIOD_SEL/COMMIT). A future release may
+# accept `latch_intervals:` as a list of `{period_id, interval}` entries;
+# scalar form here normalises to period_id=0 today and will continue to
+# work as the primary period on STANDARD firmware.
 CONF_LATCH_INTERVAL = "latch_interval"
+
+# v1.8 — starting current for energy accounting (16-bit-map devices with
+# µ-resolution energy counters). While a channel's current is below this
+# value the device counts no energy on that channel (at no load the measured
+# power is noise of either sign and would otherwise creep into both the
+# import and export counters); instantaneous readings are not affected.
+# Value in µA: 0 = off, else 10..2540 in 10 µA steps (device register
+# granularity). Device default is 400 µA. Range is enforced here so an
+# invalid value never reaches the bus. On devices without the capability the
+# key is ignored with a warning at boot.
+CONF_START_CURRENT_UA = "start_current_ua"
+
+
+def _validate_start_current_ua(value):
+    value = cv.positive_int(value)
+    if value == 0:
+        return value
+    if not 10 <= value <= 2540 or value % 10 != 0:
+        raise cv.Invalid(
+            f"`start_current_ua` must be 0 (off) or 10..2540 in steps of 10 µA "
+            f"(got {value})."
+        )
+    return value
 
 # CT model identifiers — v1.6: generated from libs/spec/sensor_models.yaml
 # (single source of truth for code→meaning across firmware + all libraries).
@@ -136,6 +165,21 @@ def _validate_ct_model_mutex(config):
             "Use `ct_model:` for uniform multi-channel deployments, or "
             "`ct_models:` for mixed-CT installations (UI3 with different clamp "
             "sizes per channel)."
+        )
+    return config
+
+
+def _validate_ct_model_force(config):
+    """`ct_model_force:` only has an effect on a CT model write — require one
+    so a stale force flag can't sit silently in YAML waiting for a later
+    `ct_model:` addition to do a destructive preset re-apply."""
+    if config.get(CONF_CT_MODEL_FORCE) and (
+        CONF_CT_MODEL not in config and CONF_CT_MODELS not in config
+    ):
+        raise cv.Invalid(
+            "`ct_model_force: true` has no effect without `ct_model:` or "
+            "`ct_models:`. It is a service option: set it together with the "
+            "model to re-apply, run once, then remove both from YAML."
         )
     return config
 
@@ -235,6 +279,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_SENSOR_CLASS, default="SCT_013"): cv.enum(
                 RBAMP_SENSOR_CLASSES, upper=True
             ),
+            cv.Optional(CONF_CT_MODEL_FORCE, default=False): cv.boolean,
             cv.Optional(CONF_BIDIRECTIONAL, default=False): cv.boolean,
             cv.Optional(CONF_NEW_ADDRESS): cv.i2c_address,
             cv.Optional(CONF_BROADCAST_LATCH, default=False): cv.boolean,
@@ -244,19 +289,23 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FLEET_GC_ENABLE): cv.boolean,
             cv.Optional(CONF_GROUP_ID): cv.All(cv.uint8_t, cv.Range(min=0, max=255)),
             cv.Optional(CONF_LATCH_INTERVAL): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_START_CURRENT_UA): _validate_start_current_ua,
         }
     )
     .extend(cv.polling_component_schema("60s"))
     .extend(i2c.i2c_device_schema(0x50)),
     _validate_new_address,
     _validate_ct_model_mutex,
+    _validate_ct_model_force,
     _validate_ct_model_per_class,
 )
 
 
 def _clamp_update_interval(config):
     """Reject `update_interval` < 1s (docs #5). The latch-rotation cadence
-    needs at least one full ~200 ms RT window plus settle time per cycle;
+    needs at least one full RT window (~100 ms on current firmware; ~200 ms
+    on pre-v1.2 images — the 1s floor is sized to the older bound, which is
+    a safe upper bound everywhere) plus settle time per cycle;
     sub-second update_interval starves the LATCH→snapshot→read pipeline
     and freezes energy integration without diagnostics."""
     interval = config.get("update_interval")
@@ -318,6 +367,9 @@ async def to_code(config):
     if CONF_CT_MODEL in config:
         cg.add(var.set_ct_model(config[CONF_CT_MODEL]))
 
+    if config[CONF_CT_MODEL_FORCE]:
+        cg.add(var.set_ct_model_force(True))
+
     if CONF_CT_MODELS in config:
         # Per-channel array. Schema validates length 1..3; codegen registers
         # each non-empty slot. The C++ apply path orders writes correctly
@@ -345,3 +397,7 @@ async def to_code(config):
         cg.add(var.set_latch_interval_ms(
             int(config[CONF_LATCH_INTERVAL].total_milliseconds)
         ))
+
+    # v1.8 start current (µA, pre-validated; capability-gated at runtime)
+    if CONF_START_CURRENT_UA in config:
+        cg.add(var.set_start_current_ua(config[CONF_START_CURRENT_UA]))

@@ -2,8 +2,7 @@
 
 Source of truth: ``libs/spec/sensor_models.yaml`` at the repo root. Loaded
 at codegen-time so ``__init__.py`` never carries a hand-maintained model
-list — that was the exact source of the six-model drift seen 2026-09-03
-and enforced by root's [RELEASE] baton 2026-09-04.
+list — that was the exact source of the six-model drift fixed in v1.6.0.
 
 Symbols exposed:
 

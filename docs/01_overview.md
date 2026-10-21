@@ -9,7 +9,7 @@
 ### Data flow (in one line)
 
 ```text
-230 V mains → CT clamp + VT → rbAmp module (ADC + DSP) → I²C (physical units)
+230 V mains → CT clamp + VT → rbAmp module (measures U/I/P/PF/Q) → I²C (physical units)
                                                                   ↓
                        Home Assistant ← ESPHome (publish_state) ← rbamp component
 ```
@@ -88,13 +88,13 @@ A single-module configuration (UI1 on mains, no sub-meters) is the minimal case,
 | RMS voltage | `voltage` | 0..300 V | ±0.5% |
 | RMS current (per channel) | `current` / `current_1` / `current_2` | 0..100 A (SKU-dependent) | ±0.5..1% |
 | Active power (signed) | `power` / `power_1` / `power_2` | ±23 kW | ±1% |
-| Power factor (signed) | `power_factor` / `power_factor_1` / `power_factor_2` | −1..+1 | ±0.01 |
-| Reactive power | `reactive_power` / `reactive_power_1` / `reactive_power_2` | same as P | ±2% |
+| Power factor (signed) | `power_factor` / `power_factor_1` / `power_factor_2` | −1..+1 | ±0.01 at PF ≈ 1 (resistive load) with SCT-013 sensors rated 10 A and above; the 5 A sensor's own phase shift adds up to ~0.015 of reading error — a purely resistive load reads ~0.985–0.993 |
+| Reactive power | `reactive_power` / `reactive_power_1` / `reactive_power_2` | same as P | — |
 | Apparent power | `apparent_power` (CH0 only; for CH1/CH2 use an HA template sensor, see [07_diy_integrations.md](07_diy_integrations.md) §6) | same as P | ±2% |
 | Mains frequency | `frequency` | 45..65 Hz | ±0.5 Hz |
 | Accumulated energy (Wh) | `energy` / `energy_1` / `energy_2` | 64-bit | depends on P accuracy |
 
-All instantaneous quantities are updated by the module autonomously at a ~200 ms step. Wh accumulation is done by the ESP32 based on the average power returned by the module over the interval between two `update()` calls. The ESPHome component hides the latch/snapshot protocol — the user sees only ready-to-use sensor entities in Home Assistant.
+All instantaneous quantities are updated by the module autonomously at a ~100 ms step. Wh accumulation is done by the ESP32 based on the average power returned by the module over the interval between two `update()` calls. The ESPHome component hides the latch/snapshot protocol — the user sees only ready-to-use sensor entities in Home Assistant.
 
 ## What the ESPHome component adds
 
@@ -121,7 +121,7 @@ All instantaneous quantities are updated by the module autonomously at a ~200 ms
   +---------+
        |   galvanic isolation
   +----|----+
-  |   ADC + DSP    sampling and RMS/P/PF computation
+  |   metering     measures and computes RMS/P/PF
   |  + I²C slave   address 0x50 (default), 50/100 kHz
   +---------+
        |   I²C (SDA/SCL + optional DRDY)

@@ -339,8 +339,8 @@ template:
           {% endif %}
 ```
 
-This fully covers the 5 mA..100 A range with ~1 mA resolution on
-small loads. Trade-off: three CT clamps on one conductor are physically
+This fully covers the 5 mA..100 A range.
+Trade-off: three CT clamps on one conductor are physically
 bulky, and each occupies one module channel (on UI3 that is the whole
 module). For most deployments a single clamp with a rating matched to
 the load covers 99% of scenarios — the dual/triple-CT pattern is needed

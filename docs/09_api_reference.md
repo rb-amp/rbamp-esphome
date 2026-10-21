@@ -791,9 +791,9 @@ The conceptual flow of a single `update()` cycle:
 ```
 Module (autonomous)                  ESP32 (ESPHome component)
 ─────────────────────────────────   ────────────────────────────────────────────
-Internal ADC sampling and
-RMS / P / PF / Q computation
-  ↓ (~200 ms per cycle)
+Measures & computes the
+instantaneous block (RMS / P / PF / Q)
+  ↓ (~100 ms per cycle)
 Atomically publishes the block       update() fires every update_interval (60 s)
 of instantaneous registers            ↓
   ↓                                 phase 1 — latch:

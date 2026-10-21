@@ -270,7 +270,7 @@ I-only SKUs (I1 / I2 / I3) have no voltage channel. The `voltage` slot returns 0
 
 ## Multi-Channel Modules
 
-On UI2 / UI3 each channel is a separate ADC + burden-network circuit, not a shared magnetic core. This allows you to:
+On UI2 / UI3 each channel is a separate, independent measurement circuit, not a shared magnetic core. This allows you to:
 
 - Put a single CT model on all channels (`ct_model:`) — the typical configuration for uniform loads.
 - Put different models on different channels (`ct_models:`) — to optimize accuracy on mixed installations (see above).

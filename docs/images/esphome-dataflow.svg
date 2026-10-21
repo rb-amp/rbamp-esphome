@@ -4,8 +4,8 @@
   <rect x="320.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
   <text x="433.0" y="80.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">CT clamp + VT</tspan></text>
   <rect x="600.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
-  <text x="713.0" y="69.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">rbAmp module (ADC +</tspan></text>
-  <text x="713.0" y="90.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">DSP)</tspan></text>
+  <text x="713.0" y="69.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">rbAmp module</tspan></text>
+  <text x="713.0" y="90.7" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">(measures U/I/P/PF/Q)</tspan></text>
   <rect x="880.0" y="40.0" width="226.0" height="72.0" rx="14" ry="14" fill="#ffffff" stroke="#00203F" stroke-width="1.6"/>
   <text x="993.0" y="80.2" text-anchor="middle" style="white-space:pre"><tspan font-family="system-ui,'Segoe UI',Inter,Helvetica,Arial,sans-serif" font-size="16" fill="#00203F" font-weight="700">I²C (physical units)</tspan></text>
   <line x1="272.0" y1="76.0" x2="305.0" y2="76.0" stroke="#00203F" stroke-width="2" stroke-linecap="round"/>

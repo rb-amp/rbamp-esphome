@@ -42,10 +42,13 @@ external_components:
 
 rbamp:
   # Legacy v1.0-compatible path: single global ct_model + default SCT_013 class
+  # (v1.8.1: ct_model_force is the service override for factory-paired
+  # modules — schema requires it to ride together with a model key)
   - id: meter_single
     address: 0x50
     update_interval: 60s
     ct_model: SCT_013_030
+    ct_model_force: true
     bidirectional: true
     broadcast_latch: true
     topology: SINGLE
@@ -54,7 +57,7 @@ rbamp:
     address: 0x52
     update_interval: 60s
     sensor_class: SCT_013
-    ct_models: [SCT_013_005, SCT_013_030, SCT_013_100]
+    ct_models: [SCT_013_005, SCT_013_030, SCT_013_050]
     topology: SINGLE
   # Phased instance — separate topology validator
   - id: meter_phased

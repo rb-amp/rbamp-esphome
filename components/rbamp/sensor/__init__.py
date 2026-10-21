@@ -32,13 +32,16 @@ from esphome.const import (
     DEVICE_CLASS_REACTIVE_POWER,
     DEVICE_CLASS_VOLTAGE,
     STATE_CLASS_MEASUREMENT,
+    STATE_CLASS_TOTAL,
     STATE_CLASS_TOTAL_INCREASING,
     UNIT_AMPERE,
+    UNIT_DEGREES,
     UNIT_EMPTY,
     UNIT_HERTZ,
     UNIT_VOLT,
     UNIT_VOLT_AMPS,
     UNIT_VOLT_AMPS_REACTIVE,
+    UNIT_VOLT_AMPS_REACTIVE_HOURS,
     UNIT_WATT,
     UNIT_WATT_HOURS,
 )
@@ -112,6 +115,22 @@ CONF_REACTIVE_POWER_A = "reactive_power_a"
 CONF_REACTIVE_POWER_B = "reactive_power_b"
 CONF_REACTIVE_POWER_C = "reactive_power_c"
 
+# v1.8 — grand-total / reactive energy, fed by on-device energy counters
+# (16-bit-map devices advertising them; on other devices the keys validate
+# but never publish, with a boot-time warning). Grand totals cover ALL device
+# channels. `energy_net` = import − export, so it can decrease (STATE_CLASS_TOTAL).
+CONF_ENERGY_TOTAL = "energy_total"
+CONF_ENERGY_EXPORTED_TOTAL = "energy_exported_total"
+CONF_ENERGY_NET = "energy_net"
+CONF_REACTIVE_ENERGY = "reactive_energy"
+CONF_REACTIVE_ENERGY_EXPORTED = "reactive_energy_exported"
+# v1.8 — three-phase voltage geometry (phase A is the 0° reference, so only
+# B/C angles are exposed). `phase_sequence` publishes 1 forward · 2 reverse ·
+# 3 abnormal, and "unknown" (NAN) while it cannot be determined.
+CONF_VOLTAGE_ANGLE_B = "voltage_angle_b"
+CONF_VOLTAGE_ANGLE_C = "voltage_angle_c"
+CONF_PHASE_SEQUENCE = "phase_sequence"
+
 VOLTAGE_SCHEMA = sensor.sensor_schema(
     unit_of_measurement=UNIT_VOLT,
     accuracy_decimals=1,
@@ -153,6 +172,28 @@ REACTIVE_POWER_SCHEMA = sensor.sensor_schema(
     accuracy_decimals=1,
     device_class=DEVICE_CLASS_REACTIVE_POWER,
     state_class=STATE_CLASS_MEASUREMENT,
+)
+ENERGY_NET_SCHEMA = sensor.sensor_schema(
+    unit_of_measurement=UNIT_WATT_HOURS,
+    accuracy_decimals=3,
+    device_class=DEVICE_CLASS_ENERGY,
+    state_class=STATE_CLASS_TOTAL,
+)
+REACTIVE_ENERGY_SCHEMA = sensor.sensor_schema(
+    unit_of_measurement=UNIT_VOLT_AMPS_REACTIVE_HOURS,
+    accuracy_decimals=3,
+    state_class=STATE_CLASS_TOTAL_INCREASING,
+)
+VOLTAGE_ANGLE_SCHEMA = sensor.sensor_schema(
+    unit_of_measurement=UNIT_DEGREES,
+    accuracy_decimals=2,
+    state_class=STATE_CLASS_MEASUREMENT,
+    icon="mdi:angle-acute",
+)
+PHASE_SEQUENCE_SCHEMA = sensor.sensor_schema(
+    unit_of_measurement=UNIT_EMPTY,
+    accuracy_decimals=0,
+    icon="mdi:sine-wave",
 )
 FREQUENCY_SCHEMA = sensor.sensor_schema(
     unit_of_measurement=UNIT_HERTZ,
@@ -226,12 +267,22 @@ PHASED_FIELDS = {
     CONF_REACTIVE_POWER_A: REACTIVE_POWER_SCHEMA,
     CONF_REACTIVE_POWER_B: REACTIVE_POWER_SCHEMA,
     CONF_REACTIVE_POWER_C: REACTIVE_POWER_SCHEMA,
+    # v1.8 — voltage phase angles vs phase A (three-phase SKUs)
+    CONF_VOLTAGE_ANGLE_B: VOLTAGE_ANGLE_SCHEMA,
+    CONF_VOLTAGE_ANGLE_C: VOLTAGE_ANGLE_SCHEMA,
 }
 
 # Shared (topology-independent) sensor fields
 SHARED_FIELDS = {
     CONF_FREQUENCY: FREQUENCY_SCHEMA,
     CONF_APPARENT_POWER: APPARENT_POWER_SCHEMA,
+    # v1.8 — on-device energy counters (grand totals over all device channels)
+    CONF_ENERGY_TOTAL: ENERGY_SCHEMA,
+    CONF_ENERGY_EXPORTED_TOTAL: ENERGY_SCHEMA,
+    CONF_ENERGY_NET: ENERGY_NET_SCHEMA,
+    CONF_REACTIVE_ENERGY: REACTIVE_ENERGY_SCHEMA,
+    CONF_REACTIVE_ENERGY_EXPORTED: REACTIVE_ENERGY_SCHEMA,
+    CONF_PHASE_SEQUENCE: PHASE_SEQUENCE_SCHEMA,
 }
 
 
@@ -371,6 +422,15 @@ _SETTER_MAP = {
     CONF_REACTIVE_POWER_A: "set_reactive_power_a_sensor",
     CONF_REACTIVE_POWER_B: "set_reactive_power_b_sensor",
     CONF_REACTIVE_POWER_C: "set_reactive_power_c_sensor",
+    # v1.8
+    CONF_ENERGY_TOTAL: "set_energy_total_sensor",
+    CONF_ENERGY_EXPORTED_TOTAL: "set_energy_exported_total_sensor",
+    CONF_ENERGY_NET: "set_energy_net_sensor",
+    CONF_REACTIVE_ENERGY: "set_reactive_energy_sensor",
+    CONF_REACTIVE_ENERGY_EXPORTED: "set_reactive_energy_exported_sensor",
+    CONF_VOLTAGE_ANGLE_B: "set_voltage_angle_b_sensor",
+    CONF_VOLTAGE_ANGLE_C: "set_voltage_angle_c_sensor",
+    CONF_PHASE_SEQUENCE: "set_phase_sequence_sensor",
 }
 
 

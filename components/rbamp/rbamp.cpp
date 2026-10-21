@@ -1,5 +1,7 @@
 #include "rbamp.h"
 #include "rbamp_const.h"
+#include "rbamp_sct_rating.h"
+#include "rbamp_std_registers.h"
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
@@ -144,6 +146,897 @@ bool RbAmpComponent::read_channel_window_u8_lo_(uint8_t field, uint8_t ch, uint8
 }
 
 // ============================================================================
+// STD line (16-bit register pointer) — transport + probe + realtime poll
+//
+// Wire contract: rbamp_std_registers.h (codegen, schema CRC 0x794BF18D).
+// Pointer is 2 bytes big-endian with 16-bit auto-increment; DATA is
+// little-endian fixed-point (U=mV, I=uA, P=mW, Q=mvar, S=mVA, PF=Q10,
+// FREQ=cHz). ESPHome's read_register16/write_register16 already emit the
+// BE pointer + repeated-start combined transaction, so the transport maps
+// 1:1 onto the I2CDevice API. Multi-byte fields are published byte-wise
+// device-side with no atomic multi-register snapshot, so a burst is no less
+// coherent than N single reads and costs one address phase instead of N.
+// ============================================================================
+
+static inline uint16_t std_le_u16_(const uint8_t *p) {
+  return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+static inline int16_t std_le_i16_(const uint8_t *p) { return static_cast<int16_t>(std_le_u16_(p)); }
+static inline int32_t std_le_i32_(const uint8_t *p) {
+  return static_cast<int32_t>(static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                              (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24));
+}
+static inline uint32_t std_le_u32_(const uint8_t *p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+static inline int64_t std_le_i64_(const uint8_t *p) {
+  uint64_t v = 0;
+  for (uint8_t i = 0; i < 8; i++) v |= static_cast<uint64_t>(p[i]) << (8 * i);
+  return static_cast<int64_t>(v);
+}
+
+// Largest burst per transaction — keeps retries cheap; longer reads are
+// split with an explicit pointer per chunk (mirrors the esp-idf reference).
+static constexpr size_t STD_BURST_MAX = 32;
+
+bool RbAmpComponent::std_read_(uint16_t reg, uint8_t *buf, size_t n) {
+  while (n) {
+    const size_t k = (n > STD_BURST_MAX) ? STD_BURST_MAX : n;
+    bool ok = false;
+    // Same 3×5 ms NACK-retry discipline as the BASIC helpers: the slave
+    // stalls its I²C engine briefly at window boundaries and during
+    // command dispatch; a NACK there is transient, not fatal.
+    for (uint8_t attempt = 0; attempt < 3 && !ok; ++attempt) {
+      if (this->read_register16(reg, buf, k) == i2c::ERROR_OK) {
+        ok = true;
+      } else if (attempt < 2) {
+        delay(5);
+      }
+    }
+    if (!ok) return false;
+    reg = static_cast<uint16_t>(reg + k);
+    buf += k;
+    n -= k;
+  }
+  return true;
+}
+
+bool RbAmpComponent::std_read_coherent_(uint16_t reg, uint8_t *buf, size_t n) {
+  if (n > 128) return false;  // family canon: coherent snapshot reads are ≤128 B
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (this->read_register16(reg, buf, n) == i2c::ERROR_OK) {
+      return true;
+    }
+    if (attempt < 2) delay(5);
+  }
+  return false;
+}
+
+bool RbAmpComponent::std_write_u16_(uint16_t reg, uint16_t val) {
+  uint8_t b[2] = {static_cast<uint8_t>(val & 0xFF), static_cast<uint8_t>(val >> 8)};
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (this->write_register16(reg, b, 2) == i2c::ERROR_OK) {
+      return true;
+    }
+    if (attempt < 2) delay(5);
+  }
+  return false;
+}
+
+bool RbAmpComponent::std_write_u8_(uint16_t reg, uint8_t val) {
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (this->write_register16(reg, &val, 1) == i2c::ERROR_OK) {
+      return true;
+    }
+    if (attempt < 2) delay(5);
+  }
+  return false;
+}
+
+bool RbAmpComponent::std_cmd_verify_(uint8_t opcode, uint16_t settle_ms, const char *op_name) {
+  if (!this->std_write_u8_(rbamp_std::REG_COMMAND, opcode)) {
+    ESP_LOGW(TAG, "%s: COMMAND write failed", op_name);
+    return false;
+  }
+  App.feed_wdt();
+  delay(settle_ms);
+  App.feed_wdt();
+  if (this->std_version_ < 0x34) {
+    return true;  // ERROR is sticky pre-0x34 — no reliable sync verdict
+  }
+  uint8_t e = 0;
+  if (!this->std_read_(rbamp_std::REG_ERROR, &e, 1)) {
+    ESP_LOGW(TAG, "%s: ERROR readback failed — result unverified", op_name);
+    return false;
+  }
+  if (e == rbamp_std::DEV_ERR_OK) return true;
+  if (e == rbamp_std::DEV_ERR_PARAM) {
+    ESP_LOGE(TAG, "%s REJECTED by device: ERR_PARAM (invalid parameter)", op_name);
+  } else if (e == rbamp_std::DEV_ERR_UNKNOWN_CMD) {
+    ESP_LOGE(TAG, "%s REJECTED by device: ERR_UNKNOWN_CMD (opcode 0x%02X)", op_name, opcode);
+  } else {
+    ESP_LOGE(TAG, "%s failed: device ERROR=0x%02X", op_name, e);
+  }
+  return false;
+}
+
+bool RbAmpComponent::std_probe_() {
+  uint8_t id[10];
+  if (!this->std_read_(rbamp_std::REG_ID, id, sizeof(id))) {
+    // Transport failure — device absent or bus fault. Let the BASIC probe
+    // run and own the error reporting (it also has the address-change
+    // self-healing path).
+    return false;
+  }
+  if (id[0] != 'S' || id[1] != 'T') {
+    return false;  // BASIC line
+  }
+
+  const uint8_t ver = id[rbamp_std::REG_VERSION];
+  const uint16_t caps = std_le_u16_(&id[rbamp_std::REG_CAPABILITIES]);
+  if (ver < 0x30 || (caps & rbamp_std::CAP_ADDR16) == 0) {
+    ESP_LOGE(TAG, "STD magic at 0x%02X but map version 0x%02X / caps 0x%04X not supported",
+             this->address_, ver, caps);
+    this->mark_failed();
+    return true;  // identified as STD — must not fall through to the BASIC path
+  }
+  if (ver > static_cast<uint8_t>(rbamp_std::MAP_VERSION)) {
+    ESP_LOGW(TAG, "STD map version 0x%02X is newer than this component (0x%02X)",
+             ver, static_cast<unsigned>(rbamp_std::MAP_VERSION));
+  }
+
+  this->std_ = true;
+  this->std_version_ = ver;
+  this->std_caps_ = caps;
+  this->std_status_ = id[rbamp_std::REG_STATUS];
+  this->n_voltage_ = id[rbamp_std::REG_N_VOLTAGE];
+  this->std_n_current_ = id[rbamp_std::REG_N_CURRENT];
+  this->std_variant_ = id[rbamp_std::REG_VARIANT];
+  this->firmware_version_ = ver;  // get_firmware_version() surface
+  return true;
+}
+
+const char *RbAmpComponent::std_variant_str_() const {
+  switch (this->std_variant_) {
+    case rbamp_std::VARIANT_UI1:  return "UI1";
+    case rbamp_std::VARIANT_UI2:  return "UI2";
+    case rbamp_std::VARIANT_UI3:  return "UI3";
+    case rbamp_std::VARIANT_I1:   return "I1";
+    case rbamp_std::VARIANT_I2:   return "I2";
+    case rbamp_std::VARIANT_I3:   return "I3";
+    case rbamp_std::VARIANT_U2I1: return "U2I1";
+    case rbamp_std::VARIANT_U2I2: return "U2I2";
+    case rbamp_std::VARIANT_U2I3: return "U2I3";
+    case rbamp_std::VARIANT_U3I3: return "U3I3";
+    case rbamp_std::VARIANT_U3I6: return "U3I6";
+    default:                      return "UNK";
+  }
+}
+
+void RbAmpComponent::std_setup_() {
+  // Channel count is discovery truth on this line: registers of channels at
+  // or beyond N_CURRENT are unspecified device-side (unmapped reads = 0xFF),
+  // so a YAML slot cannot "over-detect harmlessly" the way it can on BASIC —
+  // N_CURRENT wins, extra declared sensor slots simply never publish.
+  uint8_t ch = this->std_n_current_;
+  if (ch == 0) {
+    ESP_LOGE(TAG, "STD module reports 0 current channels");
+    this->mark_failed();
+    return;
+  }
+  if (ch > 7) {
+    ESP_LOGW(TAG, "STD module has %u current channels; this component exposes the first 7", ch);
+    ch = 7;
+  }
+  this->n_channels_ = ch;
+  this->has_voltage_ = this->n_voltage_ > 0;
+
+  ESP_LOGCONFIG(TAG, "  STD module: map=0x%02X variant=%s V=%u I=%u caps=0x%04X status=0x%02X",
+                this->std_version_, this->std_variant_str_(), this->n_voltage_,
+                this->n_channels_, this->std_caps_, this->std_status_);
+
+  if (this->fleet_gc_enable_request_ != 0xFF || this->group_id_request_valid_ || this->broadcast_latch_) {
+    ESP_LOGW(TAG, "fleet/broadcast keys are BASIC-line features — ignored on this device");
+  }
+
+  // v1.8 — running image version (u32, distinct from the map VERSION byte).
+  // Pre-E18 firmware leaves the register unmapped (reads 0xFF) — treat as
+  // unknown. Voltage phase angles + phase sequence shipped in image 0x7A:
+  // below that the bytes read 0 (angle 0 / seq "n/a"), which is
+  // indistinguishable from a real zero — gate on the image version instead.
+  {
+    uint8_t vb[4] = {0, 0, 0, 0};
+    if (this->std_read_(rbamp_std::REG_FW_VER, vb, 4)) {
+      const uint32_t v = std_le_u32_(vb);
+      this->std_fw_ver_ = (v == 0xFFFFFFFFUL) ? 0 : v;
+    }
+  }
+  this->std_angles_ok_ = this->std_fw_ver_ >= 0x0001007AUL;
+
+  // v1.8 — on-device energy counters. bit13 = counters exist (Wh/mWh blocks);
+  // bit15 = µWh/µvarh blocks (fw 0x7B). With either bit the counter-delta
+  // path replaces latch integration entirely; without bit15 the µ values are
+  // synthesized from the coarse blocks (mWh×1000 / varh×1e6).
+  this->std_ode_ = (this->std_caps_ & (rbamp_std::CAP_ONDEVICE_ENERGY | rbamp_std::CAP_ENERGY_UWH)) != 0;
+  this->std_ode_fine_ = (this->std_caps_ & rbamp_std::CAP_ENERGY_UWH) != 0;
+  // µvarh (+0xE8/+0xF0) shipped one image AFTER the µWh block: on the image
+  // that introduced bit15 those bytes read 0, so feeding reactive_energy from
+  // them would freeze the counter (or clamp forever after a coarse value).
+  // Reactive therefore gates on bit15 AND the running image — same rule as
+  // the sibling libraries ("fine_reactive"); active µWh needs bit15 only.
+  this->std_ode_fine_rea_ = this->std_ode_fine_ && this->std_fw_ver_ >= 0x0001007BUL;
+
+  const bool wants_grand = this->energy_grand_import_ != nullptr || this->energy_grand_export_ != nullptr ||
+                           this->energy_grand_net_ != nullptr || this->reactive_energy_import_ != nullptr ||
+                           this->reactive_energy_export_ != nullptr;
+  if (wants_grand && !this->std_ode_) {
+    ESP_LOGW(TAG, "energy_total/energy_net/reactive_energy sensors need on-device energy "
+                  "counters, which this device does not advertise — they will never publish. "
+                  "Per-channel `energy:` keys still work (master-side integration).");
+  }
+  if ((this->voltage_angle_[1] != nullptr || this->voltage_angle_[2] != nullptr ||
+       this->phase_sequence_ != nullptr) &&
+      !this->std_angles_ok_) {
+    ESP_LOGW(TAG, "voltage_angle_*/phase_sequence sensors need a newer device firmware — "
+                  "they will never publish on this device");
+  }
+
+  // Config writes (class / CT model / address) BEFORE energy restore + latch
+  // primer, mirroring the BASIC setup order — the address change resets the
+  // device, so everything else must be persisted first.
+  this->std_apply_config_();
+  if (this->new_addr_request_ != 0) {
+    this->std_apply_address_change_();
+    if (this->is_failed()) return;
+  }
+
+  // Restore Wh totals from NVS BEFORE publishing anything (HA Energy
+  // dashboard treats a drop in total_increasing as a meter reset) — same
+  // accumulator + prefs slot as the BASIC path.
+  this->load_prefs_();
+  for (uint8_t i = 0; i < this->n_channels_; i++) {
+    if (this->energy_[i] != nullptr) {
+      this->energy_[i]->publish_state((float) this->energy_total_wh_[i]);
+    }
+    if (i < 3 && this->energy_exported_[i] != nullptr) {
+      this->energy_exported_[i]->publish_state((float) this->energy_export_wh_[i]);
+    }
+  }
+
+  if (this->std_ode_) {
+    // Counter path: module-persisted counters make the latch/arm pipeline
+    // unnecessary — first counter tick primes the baselines, deltas flow
+    // from the second tick on. Restore + publish the grand accumulators.
+    this->load_std_energy_prefs_();
+    if (this->energy_grand_import_ != nullptr)
+      this->energy_grand_import_->publish_state((float) this->std_grand_import_wh_);
+    if (this->energy_grand_export_ != nullptr)
+      this->energy_grand_export_->publish_state((float) this->std_grand_export_wh_);
+    if (this->energy_grand_net_ != nullptr)
+      this->energy_grand_net_->publish_state((float) (this->std_grand_import_wh_ - this->std_grand_export_wh_));
+    if (this->reactive_energy_import_ != nullptr)
+      this->reactive_energy_import_->publish_state((float) this->std_rea_import_varh_);
+    if (this->reactive_energy_export_ != nullptr)
+      this->reactive_energy_export_->publish_state((float) this->std_rea_export_varh_);
+    return;
+  }
+
+  // Legacy-firmware energy path. Period metering uses latch bank 0: make
+  // sure it accumulates (RMW the arm mask so any user-armed banks stay
+  // armed), then issue the same primer latch as BASIC so the first user
+  // snapshot covers a full period anchored on the master clock. The latch
+  // lands at the module's next window boundary; the finish callback treats
+  // the first read as prime-only.
+  uint8_t arm = 0;
+  if (this->std_read_(rbamp_std::REG_PERIOD_ARM, &arm, 1)) {
+    if ((arm & 0x01) == 0) {
+      this->std_write_u8_(rbamp_std::REG_PERIOD_ARM, arm | 0x01);
+    }
+  } else {
+    ESP_LOGW(TAG, "PERIOD_ARM read failed — energy accounting may stay empty");
+  }
+  this->std_start_latch_phase_();
+}
+
+void RbAmpComponent::std_apply_config_() {
+  bool need_save = false;
+
+  // Sensor class → CFG_CLASS (read-compare-write skip, same as BASIC).
+  if (this->sensor_class_request_ != 0xFF) {
+    uint8_t cur = 0xFF;
+    if (this->std_read_(rbamp_std::REG_CFG_CLASS, &cur, 1) && cur == this->sensor_class_request_) {
+      ESP_LOGD(TAG, "CFG_CLASS already 0x%02X — no write needed", cur);
+    } else {
+      ESP_LOGCONFIG(TAG, "  Writing CFG_CLASS = 0x%02X (was 0x%02X)", this->sensor_class_request_, cur);
+      if (this->std_write_u8_(rbamp_std::REG_CFG_CLASS, this->sensor_class_request_)) {
+        need_save = true;
+      } else {
+        ESP_LOGW(TAG, "CFG_CLASS write failed");
+      }
+    }
+  }
+
+  // Global CT model → CFG_CT_MODEL. On this line the byte is an SKU
+  // reference (no gain preset is applied device-side) — calibration is
+  // per-channel via the CAL blocks, owned by factory tooling.
+  if (this->ct_model_ != 0xFF) {
+    uint8_t cur = 0xFF;
+    if (this->std_read_(rbamp_std::REG_CFG_CT_MODEL, &cur, 1) && cur == this->ct_model_) {
+      ESP_LOGD(TAG, "CFG_CT_MODEL already 0x%02X — no write needed", cur);
+    } else {
+      ESP_LOGCONFIG(TAG, "  Writing CFG_CT_MODEL = 0x%02X (was 0x%02X; reference metadata on this line)",
+                    this->ct_model_, cur);
+      if (this->std_write_u8_(rbamp_std::REG_CFG_CT_MODEL, this->ct_model_)) {
+        need_save = true;
+      } else {
+        ESP_LOGW(TAG, "CFG_CT_MODEL write failed");
+      }
+    }
+  }
+
+  // Per-channel CT models → CHMAP_MODEL block, gated on CAP_CHMAP_PERSIST
+  // (bit 14). Contract (root dca511b): firmware advertises the bit ONLY when
+  // CMD_SAVE_CONFIG actually persists the per-channel CHMAP to flash and
+  // reloads it on boot — safe on a mixed fleet. Without the bit a write
+  // would silently revert on device power-cycle (spec finding E9), the exact
+  // failure mode the BASIC v1.6 persist-fix closed. Gate on this shipped,
+  // queryable capability, NEVER on a planned map version: the earlier
+  // `>= 0x35` gate here keyed on a roadmap batch that shipped without E9.
+  bool any_per_channel = false;
+  for (uint8_t i = 0; i < 16 && !any_per_channel; i++) {
+    any_per_channel = this->ct_models_request_[i] != 0xFF;
+  }
+  if (any_per_channel) {
+    if ((this->std_caps_ & rbamp_std::CAP_CHMAP_PERSIST) == 0) {
+      ESP_LOGW(TAG, "ct_models: (per-channel) not supported by this device — it does not "
+                    "advertise persistent per-channel model storage, so the write would "
+                    "silently revert on device power-cycle. Use the global `ct_model:` "
+                    "key. (Keys ignored.)");
+    } else {
+      for (uint8_t ch = 0; ch < this->n_channels_ && ch < 16; ch++) {
+        const uint8_t code = this->ct_models_request_[ch];
+        if (code == 0xFF) continue;
+        uint8_t cur = 0xFF;
+        if (this->std_read_(rbamp_std::CHMAP_MODEL(ch), &cur, 1) && cur == code) continue;
+        ESP_LOGCONFIG(TAG, "  Writing CHMAP_MODEL ch%u = 0x%02X (was 0x%02X)", ch, code, cur);
+        if (this->std_write_u8_(rbamp_std::CHMAP_MODEL(ch), code)) {
+          need_save = true;
+        } else {
+          ESP_LOGW(TAG, "CHMAP_MODEL ch%u write failed", ch);
+        }
+      }
+    }
+  }
+
+  // v1.8 — starting current for energy (CFG_START_UA, u16 µA, fw 0x7B).
+  // Below this channel current the module counts no energy (at no load the
+  // measured power is noise of either sign and would creep into both
+  // counters); instantaneous readings are unaffected. Applies at once,
+  // SAVE_CONFIG persists. Range is schema-validated (0 = off, 10..2540 in
+  // 10 µA steps) so an invalid value never reaches the bus.
+  if (this->start_current_ua_request_ != 0xFFFF) {
+    if ((this->std_caps_ & rbamp_std::CAP_ENERGY_UWH) == 0) {
+      ESP_LOGW(TAG, "start_current_ua: not supported by this device firmware — key ignored "
+                    "(the device counts energy at any current)");
+    } else {
+      uint8_t cur[2] = {0xFF, 0xFF};
+      const uint16_t want = this->start_current_ua_request_;
+      if (this->std_read_(rbamp_std::REG_CFG_START_UA, cur, 2) && std_le_u16_(cur) == want) {
+        ESP_LOGD(TAG, "CFG_START_UA already %u µA — no write needed", want);
+      } else {
+        ESP_LOGCONFIG(TAG, "  Writing CFG_START_UA = %u µA (was %u)", want, std_le_u16_(cur));
+        if (this->std_write_u16_(rbamp_std::REG_CFG_START_UA, want)) {
+          need_save = true;
+        } else {
+          ESP_LOGW(TAG, "CFG_START_UA write failed");
+        }
+      }
+    }
+  }
+
+  if (need_save) {
+    if (this->std_cmd_verify_(static_cast<uint8_t>(rbamp_std::CMD_SAVE_CONFIG),
+                              rbamp_std::SETTLE_MS_SAVE_CONFIG, "SAVE_CONFIG")) {
+      ESP_LOGCONFIG(TAG, "  Device config persisted (SAVE_CONFIG); remove the config keys "
+                    "from YAML after verification");
+    } else {
+      ESP_LOGE(TAG, "  SAVE_CONFIG failed — config applied IN RAM ONLY, reverts on device power-cycle");
+    }
+  }
+}
+
+void RbAmpComponent::std_apply_address_change_() {
+  const uint8_t new_addr = this->new_addr_request_;
+  if (new_addr < 0x08 || new_addr > 0x77 || new_addr == this->address_) {
+    ESP_LOGW(TAG, "Invalid new_address 0x%02X — keeping current 0x%02X", new_addr, this->address_);
+    return;
+  }
+  ESP_LOGCONFIG(TAG, "  Changing I2C address: 0x%02X -> 0x%02X", this->address_, new_addr);
+
+  if (!this->std_write_u8_(rbamp_std::REG_CFG_I2C_ADDR, new_addr)) {
+    ESP_LOGW(TAG, "CFG_I2C_ADDR write failed; keeping 0x%02X", this->address_);
+    return;
+  }
+  // SAVE_CONFIG validates the address range device-side (ERR_PARAM on an
+  // out-of-range value; other valid CFG fields still persist).
+  if (!this->std_cmd_verify_(static_cast<uint8_t>(rbamp_std::CMD_SAVE_CONFIG),
+                             rbamp_std::SETTLE_MS_SAVE_CONFIG, "SAVE_CONFIG(addr)")) {
+    ESP_LOGE(TAG, "Address change not persisted — keeping 0x%02X", this->address_);
+    return;
+  }
+  // The new address applies on reset. The slave may NACK the tail of the
+  // RESET write — advisory.
+  this->std_write_u8_(rbamp_std::REG_COMMAND, static_cast<uint8_t>(rbamp_std::CMD_RESET));
+  App.feed_wdt();
+  delay(200);  // boot-to-I2C is single-digit ms on this line; generous margin
+  App.feed_wdt();
+
+  this->set_i2c_address(new_addr);
+  uint8_t id[2] = {0, 0};
+  if (this->std_read_(rbamp_std::REG_ID, id, 2) && id[0] == 'S' && id[1] == 'T') {
+    ESP_LOGCONFIG(TAG, "  Address change confirmed at 0x%02X", new_addr);
+    ESP_LOGW(TAG, "IMPORTANT: update YAML to `address: 0x%02X` and remove `new_address:` "
+                  "before next boot.", new_addr);
+    this->new_addr_request_ = 0;
+  } else {
+    ESP_LOGE(TAG, "Address change applied but device not responding at 0x%02X — "
+                  "check wiring and power-cycle the device.", new_addr);
+    this->mark_failed();
+  }
+}
+
+void RbAmpComponent::std_start_latch_phase_() {
+  const uint32_t t_latch = millis();
+  if (!this->std_write_u8_(rbamp_std::REG_LATCH_BANK, 0) ||
+      !this->std_write_u8_(rbamp_std::REG_COMMAND, static_cast<uint8_t>(rbamp_std::CMD_LATCH_PERIOD))) {
+    ESP_LOGW(TAG, "LATCH write failed; skipping period integration this cycle");
+    return;
+  }
+  // The latch is serviced at the module's NEXT RT-window boundary — one
+  // window away at most: ~100 ms on images ≥0x7C (whole mains cycles nearest
+  // 100 ms), ~160 ms @50 Hz / ~133 ms @60 Hz with a 200 ms publish on older
+  // images (this latch path only runs on fw without on-device counters, i.e.
+  // the older-window era). A shorter settle would read the PREVIOUS snapshot
+  // as fresh; the codegen 300 ms settle is a safe upper bound for every
+  // image. PD_VALID is sticky (set-once), NOT a freshness flag — wall-clock
+  // wait is the contract. Non-blocking, same pattern as the BASIC latch
+  // pipeline.
+  this->set_timeout("rbamp_std_period", rbamp_std::SETTLE_MS_LATCH_PERIOD,
+                    [this, t_latch]() { this->std_finish_latch_phase_(t_latch); });
+}
+
+void RbAmpComponent::std_finish_latch_phase_(uint32_t t_latch) {
+  // Stale check: PD_VALID bit0 says bank 0 has EVER latched (sticky). A clear
+  // bit this late means the primer/arm failed — surface once per cycle.
+  uint8_t pd = 0;
+  if (!this->std_read_(rbamp_std::REG_PD_VALID, &pd, 1) || (pd & 0x01) == 0) {
+    ESP_LOGD(TAG, "Latch bank 0 has no snapshot yet (PD_VALID=0x%02X)", pd);
+    return;
+  }
+
+  // One burst: bank header (incl. NSAMP + WIN_CNT) + per-channel E blocks.
+  const size_t len = rbamp_std::LATCH_CHE_BASE +
+                     static_cast<size_t>(this->n_channels_) * rbamp_std::LATCH_CHE_STRIDE;
+  uint8_t b[rbamp_std::LATCH_CHE_BASE + 7 * rbamp_std::LATCH_CHE_STRIDE];
+  if (!this->std_read_(rbamp_std::LATCH(0), b, len)) {
+    ESP_LOGW(TAG, "Latch bank 0 read failed — keeping previous integration window");
+    return;
+  }
+  const uint32_t nsamp = std_le_u32_(b + rbamp_std::LATCH_NSAMP);
+  const uint32_t win_count = std_le_u32_(b + rbamp_std::LATCH_WIN_CNT);
+  if (nsamp == 0 || win_count == 0) {
+    // The arm mask and bank state live in device RAM: a DUT reset clears
+    // them, after which every latch snapshots an un-armed bank (nsamp=0)
+    // forever and energy silently freezes (bench HIL T5 defect, 2026-09-29).
+    // Detect the lost arm, re-arm, and re-prime the integration clocks —
+    // the outage interval carries no data, so it is skipped, not estimated.
+    uint8_t arm = 0;
+    if (this->std_read_(rbamp_std::REG_PERIOD_ARM, &arm, 1) && (arm & 0x01) == 0) {
+      ESP_LOGW(TAG, "Latch bank 0 lost its arm (device reset detected) — re-arming; "
+                    "one integration window is skipped");
+      this->std_write_u8_(rbamp_std::REG_PERIOD_ARM, arm | 0x01);
+      for (uint8_t ch = 0; ch < 7; ch++) this->primed_[ch] = false;
+    } else {
+      ESP_LOGD(TAG, "Latch window empty (nsamp=%u win=%u) — no window elapsed yet",
+               nsamp, win_count);
+    }
+    return;
+  }
+
+  bool any_integrated = false;
+  for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
+    const bool wants_import = this->energy_[ch] != nullptr;
+    const bool wants_export = ch < 3 && this->bidirectional_ && this->energy_exported_[ch] != nullptr;
+    if (!wants_import && !wants_export) continue;
+
+    // First cycle after boot: prime the clock, do NOT integrate (no dt anchor).
+    if (!this->primed_[ch]) {
+      this->last_latch_ms_[ch] = t_latch;
+      this->primed_[ch] = true;
+      continue;
+    }
+    const uint32_t dt_ms = t_latch - this->last_latch_ms_[ch];
+    if (dt_ms == 0) continue;
+    const double dt_s = dt_ms / 1000.0;
+
+    // Contract (spec E3): average P over the period = (E_pos + E_neg) / NSAMP
+    // [mW]. The device has NO clock — energy = avg P × MASTER wall-clock dt,
+    // the same anti-revert canon as BASIC L9. HA total_increasing sensors get
+    // the import/export split natively published by the device: E_pos
+    // accumulates P≥0 samples, E_neg (≤0) the export samples.
+    const uint8_t *che = b + rbamp_std::LATCH_CHE(ch);
+    const int64_t e_pos = std_le_i64_(che + rbamp_std::LATCH_CHE_E_POS);
+    const int64_t e_neg = std_le_i64_(che + rbamp_std::LATCH_CHE_E_NEG);
+    const double avg_import_w = (static_cast<double>(e_pos) / nsamp) * 1e-3;
+    const double avg_export_w = (static_cast<double>(-e_neg) / nsamp) * 1e-3;
+    if (!std::isfinite(avg_import_w) || avg_import_w < 0.0 || avg_import_w > 50000.0) continue;
+
+    if (wants_import) {
+      this->energy_total_wh_[ch] += avg_import_w * dt_s / 3600.0;
+      this->energy_[ch]->publish_state((float) this->energy_total_wh_[ch]);
+    }
+    if (wants_export && std::isfinite(avg_export_w) && avg_export_w >= 0.0 && avg_export_w <= 50000.0) {
+      this->energy_export_wh_[ch] += avg_export_w * dt_s / 3600.0;
+      this->energy_exported_[ch]->publish_state((float) this->energy_export_wh_[ch]);
+    }
+    this->last_latch_ms_[ch] = t_latch;
+    any_integrated = true;
+  }
+
+  if (any_integrated && (this->last_save_ms_ == 0 || (t_latch - this->last_save_ms_) >= SAVE_INTERVAL_MS)) {
+    this->save_prefs_();
+  }
+}
+
+void RbAmpComponent::load_std_energy_prefs_() {
+  // Same slot-key scheme as load_prefs_ (namespace ⊕ address ⊕ layout version).
+  uint32_t hash = fnv1_hash("rbamp_std_energy") ^ static_cast<uint32_t>(this->address_)
+                ^ RBAMP_STD_ENERGY_PREF_VERSION;
+  this->std_energy_pref_ = global_preferences->make_preference<RbAmpStdEnergyPrefData>(hash);
+
+  RbAmpStdEnergyPrefData saved{};
+  if (!this->std_energy_pref_.load(&saved)) {
+    ESP_LOGCONFIG(TAG, "  No saved grand-energy state — starting from 0");
+    return;
+  }
+  if (std::isfinite(saved.grand_import_wh) && saved.grand_import_wh >= 0.0)
+    this->std_grand_import_wh_ = saved.grand_import_wh;
+  if (std::isfinite(saved.grand_export_wh) && saved.grand_export_wh >= 0.0)
+    this->std_grand_export_wh_ = saved.grand_export_wh;
+  if (std::isfinite(saved.rea_import_varh) && saved.rea_import_varh >= 0.0)
+    this->std_rea_import_varh_ = saved.rea_import_varh;
+  if (std::isfinite(saved.rea_export_varh) && saved.rea_export_varh >= 0.0)
+    this->std_rea_export_varh_ = saved.rea_export_varh;
+  ESP_LOGCONFIG(TAG, "  Restored grand energy: imp=%.3f Wh exp=%.3f Wh rea_imp=%.3f varh rea_exp=%.3f varh",
+                this->std_grand_import_wh_, this->std_grand_export_wh_,
+                this->std_rea_import_varh_, this->std_rea_export_varh_);
+}
+
+void RbAmpComponent::std_energy_counters_update_() {
+  const bool wants_grand = this->energy_grand_import_ != nullptr || this->energy_grand_export_ != nullptr ||
+                           this->energy_grand_net_ != nullptr || this->reactive_energy_import_ != nullptr ||
+                           this->reactive_energy_export_ != nullptr;
+  bool wants_ch = false;
+  for (uint8_t ch = 0; ch < this->n_channels_ && !wants_ch; ch++) {
+    wants_ch = this->energy_[ch] != nullptr ||
+               (ch < 3 && this->bidirectional_ && this->energy_exported_[ch] != nullptr);
+  }
+  if (!wants_grand && !wants_ch) return;
+
+  const uint32_t now = millis();
+
+  // Delta validity context: the life-time generation counter steps on a
+  // deliberate counter reset/adopt (no delta may span it), and a decreasing
+  // uptime means the module restarted — its counters may step back by the
+  // energy accumulated since their last NVM save (delta clamps to 0 then).
+  uint8_t gb[4], ub[4];
+  if (!this->std_read_(rbamp_std::REG_LT_GEN, gb, 4) ||
+      !this->std_read_(static_cast<uint16_t>(rbamp_std::ENERGY(0) + rbamp_std::ENERGY_UPTIME), ub, 4)) {
+    ESP_LOGW(TAG, "Energy counter context read failed — skipping this window");
+    return;
+  }
+  const uint32_t gen = std_le_u32_(gb);
+  const uint32_t uptime = std_le_u32_(ub);
+
+  // Grand snapshot — ONE coherent transaction so import/export belong to the
+  // same instant. Everything is normalized to µ units on ingest.
+  int64_t g_imp, g_exp, r_imp, r_exp;
+  if (this->std_ode_fine_) {
+    uint8_t b[40];  // IMP/EXP/NET µWh + REA IMP/EXP µvarh (0x..D0..0x..F7)
+    if (!this->std_read_coherent_(
+            static_cast<uint16_t>(rbamp_std::ENERGY(0) + rbamp_std::ENERGY_E_ACT_IMP_UWH), b, 40)) {
+      ESP_LOGW(TAG, "Grand energy snapshot read failed — skipping this window");
+      return;
+    }
+    g_imp = std_le_i64_(b + 0);
+    g_exp = std_le_i64_(b + 8);
+    // NET (b+16) is read for coherence but never delta'd: NET = IMP − EXP by
+    // definition, and clamping a NET delta independently would skew it.
+    if (this->std_ode_fine_rea_) {
+      r_imp = std_le_i64_(b + 24);
+      r_exp = std_le_i64_(b + 32);
+    } else {
+      // bit15 without the µvarh image: +0xE8.. read 0 — take reactive from
+      // the coarse varh counters instead (their own coherent pair read).
+      uint8_t rb[16];
+      if (!this->std_read_coherent_(
+              static_cast<uint16_t>(rbamp_std::ENERGY(0) + rbamp_std::ENERGY_E_REA_IMP), rb, 16)) {
+        ESP_LOGW(TAG, "Reactive energy snapshot read failed — skipping this window");
+        return;
+      }
+      r_imp = std_le_i64_(rb + 0) * 1000000;
+      r_exp = std_le_i64_(rb + 8) * 1000000;
+    }
+  } else {
+    uint8_t b[40];  // REA IMP/EXP varh + IMP/EXP/NET mWh (+0x18..+0x3F)
+    if (!this->std_read_coherent_(
+            static_cast<uint16_t>(rbamp_std::ENERGY(0) + rbamp_std::ENERGY_E_REA_IMP), b, 40)) {
+      ESP_LOGW(TAG, "Grand energy snapshot read failed — skipping this window");
+      return;
+    }
+    r_imp = std_le_i64_(b + 0) * 1000000;   // varh → µvarh
+    r_exp = std_le_i64_(b + 8) * 1000000;
+    g_imp = std_le_i64_(b + 16) * 1000;     // mWh → µWh
+    g_exp = std_le_i64_(b + 24) * 1000;
+  }
+
+  // Per-channel snapshot — the whole 16 B/channel block in one transaction.
+  int64_t ch_imp[7] = {0}, ch_exp[7] = {0};
+  if (wants_ch) {
+    uint8_t b[7 * 16];
+    const uint16_t base = this->std_ode_fine_ ? rbamp_std::GROUP_ENERGY_UWH(0)
+                                              : rbamp_std::GROUP_ENERGY_MWH(0);
+    if (!this->std_read_coherent_(base, b, static_cast<size_t>(this->n_channels_) * 16)) {
+      ESP_LOGW(TAG, "Per-channel energy snapshot read failed — skipping this window");
+      return;
+    }
+    const int64_t scale = this->std_ode_fine_ ? 1 : 1000;
+    for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
+      ch_imp[ch] = std_le_i64_(b + ch * 16 + 0) * scale;
+      ch_exp[ch] = std_le_i64_(b + ch * 16 + 8) * scale;
+    }
+  }
+
+  const bool rebase_only = !this->std_cnt_primed_ || gen != this->std_prev_gen_;
+  if (this->std_cnt_primed_ && gen != this->std_prev_gen_) {
+    ESP_LOGW(TAG, "Energy counter generation changed (%u -> %u, counter reset/adopt) — "
+                  "re-basing, one window skipped", this->std_prev_gen_, gen);
+  }
+  if (!rebase_only && uptime < this->std_prev_uptime_) {
+    ESP_LOGW(TAG, "Module restart detected (uptime %u < %u) — counters may step back by the "
+                  "unsaved tail; negative deltas clamp to 0", uptime, this->std_prev_uptime_);
+  }
+
+  const uint32_t dt_ms = now - this->std_cnt_last_ms_;
+  // Glitch guard: a delta implying far more power than the hardware can meter
+  // (≈72 kW/channel sustained over the window) is a corrupt read, not energy.
+  const int64_t cap_ch = static_cast<int64_t>(dt_ms) * 20000;
+  const int64_t cap_grand = cap_ch * 8;
+  bool glitch = false;
+  auto delta = [&glitch](int64_t now_v, int64_t prev_v, int64_t cap) -> int64_t {
+    const int64_t d = now_v - prev_v;
+    if (d < 0) return 0;
+    if (d > cap) { glitch = true; return 0; }
+    return d;
+  };
+
+  if (!rebase_only && dt_ms > 0) {
+    const int64_t d_imp = delta(g_imp, this->std_prev_grand_imp_, cap_grand);
+    const int64_t d_exp = delta(g_exp, this->std_prev_grand_exp_, cap_grand);
+    const int64_t d_rimp = delta(r_imp, this->std_prev_rea_imp_, cap_grand);
+    const int64_t d_rexp = delta(r_exp, this->std_prev_rea_exp_, cap_grand);
+    int64_t d_ch_imp[7] = {0}, d_ch_exp[7] = {0};
+    if (wants_ch) {
+      for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
+        d_ch_imp[ch] = delta(ch_imp[ch], this->std_prev_ch_imp_[ch], cap_ch);
+        d_ch_exp[ch] = delta(ch_exp[ch], this->std_prev_ch_exp_[ch], cap_ch);
+      }
+    }
+    if (glitch) {
+      ESP_LOGW(TAG, "Implausible energy counter jump — treating as a corrupt read, re-basing");
+    } else {
+      this->std_grand_import_wh_ += d_imp * 1e-6;
+      this->std_grand_export_wh_ += d_exp * 1e-6;
+      this->std_rea_import_varh_ += d_rimp * 1e-6;
+      this->std_rea_export_varh_ += d_rexp * 1e-6;
+      if (this->energy_grand_import_ != nullptr)
+        this->energy_grand_import_->publish_state((float) this->std_grand_import_wh_);
+      if (this->energy_grand_export_ != nullptr)
+        this->energy_grand_export_->publish_state((float) this->std_grand_export_wh_);
+      if (this->energy_grand_net_ != nullptr)
+        this->energy_grand_net_->publish_state(
+            (float) (this->std_grand_import_wh_ - this->std_grand_export_wh_));
+      if (this->reactive_energy_import_ != nullptr)
+        this->reactive_energy_import_->publish_state((float) this->std_rea_import_varh_);
+      if (this->reactive_energy_export_ != nullptr)
+        this->reactive_energy_export_->publish_state((float) this->std_rea_export_varh_);
+      for (uint8_t ch = 0; ch < this->n_channels_ && wants_ch; ch++) {
+        if (this->energy_[ch] != nullptr) {
+          this->energy_total_wh_[ch] += d_ch_imp[ch] * 1e-6;
+          this->energy_[ch]->publish_state((float) this->energy_total_wh_[ch]);
+        }
+        if (ch < 3 && this->bidirectional_ && this->energy_exported_[ch] != nullptr) {
+          this->energy_export_wh_[ch] += d_ch_exp[ch] * 1e-6;
+          this->energy_exported_[ch]->publish_state((float) this->energy_export_wh_[ch]);
+        }
+      }
+      if (this->last_save_ms_ == 0 || (now - this->last_save_ms_) >= SAVE_INTERVAL_MS) {
+        this->save_prefs_();
+      }
+    }
+  }
+
+  this->std_prev_gen_ = gen;
+  this->std_prev_uptime_ = uptime;
+  this->std_prev_grand_imp_ = g_imp;
+  this->std_prev_grand_exp_ = g_exp;
+  this->std_prev_rea_imp_ = r_imp;
+  this->std_prev_rea_exp_ = r_exp;
+  for (uint8_t ch = 0; ch < 7; ch++) {
+    this->std_prev_ch_imp_[ch] = ch_imp[ch];
+    this->std_prev_ch_exp_[ch] = ch_exp[ch];
+  }
+  this->std_cnt_last_ms_ = now;
+  this->std_cnt_primed_ = true;
+}
+
+std::string RbAmpComponent::get_phase_sequence_str() {
+  if (!this->std_ || !this->std_angles_ok_) return "unavailable";
+  uint8_t seq = 0;
+  if (!this->std_read_(rbamp_std::REG_PHASE_SEQ, &seq, 1)) return "unavailable";
+  switch (seq) {
+    case 1: return "forward";
+    case 2: return "reverse";
+    case 3: return "abnormal";
+    default: return "n/a";
+  }
+}
+
+uint16_t RbAmpComponent::read_start_current_ua() {
+  if (!this->std_ || (this->std_caps_ & rbamp_std::CAP_ENERGY_UWH) == 0) return 0xFFFF;
+  uint8_t b[2];
+  if (!this->std_read_(rbamp_std::REG_CFG_START_UA, b, 2)) return 0xFFFF;
+  return std_le_u16_(b);
+}
+
+void RbAmpComponent::std_update_() {
+  // Period metering — same `latch_interval:` cadence decoupling as BASIC:
+  // LATCH every latch_interval_ms_ (or every update() when unset), RT reads
+  // below every update(). Wh stays correct at any ratio (master wall-clock dt).
+  const uint32_t now = millis();
+  const uint32_t latch_gate = this->latch_interval_ms_ > 0
+                                  ? this->latch_interval_ms_
+                                  : this->get_update_interval();
+  if (this->last_latch_wall_ms_ == 0 || (now - this->last_latch_wall_ms_) >= latch_gate) {
+    this->last_latch_wall_ms_ = now;
+    if (this->std_ode_) {
+      this->std_energy_counters_update_();  // v1.8: counter deltas, no latch
+    } else {
+      this->std_start_latch_phase_();
+    }
+  }
+
+  // Health gate: STATUS.sensor_ok — the metering front-end is producing frames.
+  // (There is no atomic data-ready flag on this line; metrology publishes once
+  // per measurement window — ~100 ms on images ≥0x7C, every 200 ms on older
+  // images — so any poll interval ≥1 s always sees fresh data when the sensor
+  // path is alive.)
+  uint8_t status = 0;
+  if (!this->std_read_(rbamp_std::REG_STATUS, &status, 1)) {
+    ESP_LOGD(TAG, "STD STATUS read failed — skipping publish this cycle");
+    return;
+  }
+  this->std_status_ = status;
+  if ((status & rbamp_std::ST_SENSOR_OK) == 0) {
+    ESP_LOGD(TAG, "STD sensor path not ready (STATUS=0x%02X) — skipping publish", status);
+    return;
+  }
+
+  // Mains frequency: u16 cHz at 0x0010, wall-time ZC based, updates ~2 s.
+  if (this->frequency_ != nullptr) {
+    uint8_t fb[2];
+    if (this->std_read_(rbamp_std::REG_FREQ, fb, 2)) {
+      const float hz = std_le_u16_(fb) / 100.0f;
+      if (hz >= 40.0f && hz <= 70.0f) {
+        this->frequency_->publish_state(hz);
+      }
+    }
+  }
+
+  // Voltage channels: i32 mV at VOLTAGE(v). Component exposes up to 3 slots
+  // (voltage / voltage_a/b/c map onto voltage_[0..2]).
+  const uint8_t nv = this->n_voltage_ > 3 ? 3 : this->n_voltage_;
+  for (uint8_t v = 0; v < nv; v++) {
+    // v1.8: when the phase angle is wanted (and the firmware computes it),
+    // one 12-byte burst covers U_RMS (+0x00, i32 mV) through ANGLE (+0x0A,
+    // i16 centi-degree vs phase A; 0x8000 = no angle yet).
+    const bool want_angle = this->std_angles_ok_ && this->voltage_angle_[v] != nullptr;
+    if (this->voltage_[v] == nullptr && !want_angle) continue;
+    uint8_t b[12];
+    const size_t len = want_angle ? 12 : 4;
+    if (!this->std_read_(static_cast<uint16_t>(rbamp_std::VOLTAGE(v) + rbamp_std::VOLTAGE_U_RMS), b, len)) {
+      ESP_LOGW(TAG, "STD U_rms[%u] read failed", v);
+      continue;
+    }
+    const float u = std_le_i32_(b) * 1e-3f;
+    if (this->voltage_[v] != nullptr && sanity_voltage_(u)) {
+      this->voltage_[v]->publish_state(u);
+    }
+    if (want_angle) {
+      const int16_t raw = std_le_i16_(b + rbamp_std::VOLTAGE_ANGLE);
+      if (raw != INT16_MIN) {  // 0x8000 = angle not available (e.g. phase below 50 V)
+        this->voltage_angle_[v]->publish_state(raw / 100.0f);
+      } else {
+        this->voltage_angle_[v]->publish_state(NAN);
+      }
+    }
+  }
+
+  // v1.8 — phase sequence (u8: 0 n/a · 1 forward · 2 reverse · 3 abnormal).
+  // 0 means "cannot be determined" (fewer than 3 live voltage inputs) —
+  // published as NAN so HA shows "unknown" rather than a fake reading.
+  if (this->phase_sequence_ != nullptr && this->std_angles_ok_) {
+    uint8_t seq = 0;
+    if (this->std_read_(rbamp_std::REG_PHASE_SEQ, &seq, 1)) {
+      this->phase_sequence_->publish_state(seq == 0 ? NAN : (float) seq);
+    }
+  }
+
+  // Current channels: one 18-byte burst per channel covers I_RMS(i32 uA),
+  // P(i32 mW), Q(i32 mvar), S(i32 mVA), PF(i16 Q10) — offsets 0x00..0x11
+  // within the CURRENT block.
+  for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
+    const bool wants_ch = this->current_[ch] != nullptr || this->power_[ch] != nullptr ||
+                          this->pf_[ch] != nullptr || this->reactive_power_[ch] != nullptr ||
+                          (ch == 0 && this->apparent_power_ != nullptr);
+    if (!wants_ch) continue;
+
+    uint8_t b[18];
+    if (!this->std_read_(rbamp_std::CURRENT(ch), b, sizeof(b))) {
+      ESP_LOGW(TAG, "STD channel %u block read failed", ch);
+      continue;
+    }
+    const float i_rms = std_le_i32_(b + rbamp_std::CURRENT_I_RMS) * 1e-6f;
+    const float p     = std_le_i32_(b + rbamp_std::CURRENT_P) * 1e-3f;
+    const float q     = std_le_i32_(b + rbamp_std::CURRENT_Q) * 1e-3f;
+    const float s     = std_le_i32_(b + rbamp_std::CURRENT_S) * 1e-3f;
+    const float pf    = std_le_i16_(b + rbamp_std::CURRENT_PF) / 1024.0f;
+
+    if (this->current_[ch] != nullptr && sanity_current_(i_rms)) {
+      this->current_[ch]->publish_state(i_rms);
+    }
+    // P/Q/S/PF need a sampled voltage; on I-only variants they publish 0.
+    if (this->has_voltage_) {
+      if (this->power_[ch] != nullptr && sanity_power_(p)) {
+        this->power_[ch]->publish_state(p);
+      }
+      if (this->reactive_power_[ch] != nullptr && sanity_power_(q)) {
+        this->reactive_power_[ch]->publish_state(q);
+      }
+      if (this->pf_[ch] != nullptr && sanity_pf_(pf)) {
+        this->pf_[ch]->publish_state(pf);
+      }
+      if (ch == 0 && this->apparent_power_ != nullptr && sanity_power_(s) && s >= 0.0f) {
+        this->apparent_power_->publish_state(s);
+      }
+    }
+  }
+
+  // Grand-total active power (TOTALS block, ch-sum on multi-channel
+  // variants, mirror of ch0 on single-channel). Only read when declared.
+  if (this->power_total_ != nullptr && this->has_voltage_) {
+    uint8_t b[4];
+    if (this->std_read_(static_cast<uint16_t>(rbamp_std::TOTALS(0) + rbamp_std::TOTALS_P), b, 4)) {
+      const float p_tot = std_le_i32_(b) * 1e-3f;
+      if (sanity_power_(p_tot)) {
+        this->power_total_->publish_state(p_tot);
+      }
+    }
+  }
+}
+
+// ============================================================================
 // High-level operations — stubs in m1
 // ============================================================================
 
@@ -252,7 +1145,7 @@ void RbAmpComponent::load_prefs_() {
   // abort restore).
   //
   // TODO(STANDARD-signedness, v1.4+): on STANDARD/PRO firmware with
-  // FW_TIER bit2 (bidirectional), REG_V03_PERIOD_AVG_P (0xDC) is signed —
+  // FW_TIER bit2 (bidirectional), REG_PERIOD_AVG_P0 (0xDC) is signed —
   // net energy can legitimately be < 0 (net export). For that tier, replace
   // the `e >= 0.0` guard with `e > -kReasonableLowerBound` so net-export
   // totals survive NVS restore. Currently no-op since BASIC unidirectional
@@ -296,6 +1189,19 @@ void RbAmpComponent::save_prefs_() {
   } else {
     ESP_LOGW(TAG, "Failed to save Wh totals to NVS — will retry next cycle");
   }
+
+  // v1.8 — grand/reactive accumulators ride the same save cadence (their
+  // pref object only exists once load_std_energy_prefs_ ran, i.e. std_ode_).
+  if (this->std_ode_) {
+    RbAmpStdEnergyPrefData g{};
+    g.grand_import_wh = this->std_grand_import_wh_;
+    g.grand_export_wh = this->std_grand_export_wh_;
+    g.rea_import_varh = this->std_rea_import_varh_;
+    g.rea_export_varh = this->std_rea_export_varh_;
+    if (!this->std_energy_pref_.save(&g)) {
+      ESP_LOGW(TAG, "Failed to save grand-energy totals to NVS — will retry next cycle");
+    }
+  }
 }
 
 // Production firmware refuses flash-writing operations from
@@ -319,17 +1225,46 @@ bool RbAmpComponent::check_factory_mode_(const char *op_name) {
   return true;
 }
 
-void RbAmpComponent::apply_ct_model_() {
-  if (!this->check_factory_mode_("CT model write")) {
-    return;
-  }
+// Sensor classes 2 (WIRED_CT) and 3 (BUILTIN_CT) mean the module is
+// calibrated as a pair with its fitted sensor. On this firmware line a
+// SENSOR_CLASS write (even with the same value) zeroes the per-channel
+// models and linearity shapes, and a CT model write replaces the paired
+// gain/NF with the generic preset — so class/model writes to such a module
+// are refused (write-policy parity with the esp-idf/arduino libraries).
+static constexpr uint8_t SENSOR_CLASS_WIRED_CT = 2;
+static constexpr uint8_t SENSOR_CLASS_BUILTIN_CT = 3;
+static bool sensor_class_is_paired_(uint8_t cls) {
+  return cls == SENSOR_CLASS_WIRED_CT || cls == SENSOR_CLASS_BUILTIN_CT;
+}
 
+void RbAmpComponent::apply_ct_model_() {
   // S4 read-compare-write: REG_CT_MODEL_CH0 (0x51) mirrors the applied value
   // for ch0, which is what the legacy single-channel path targets. Skip if
-  // already matches.
+  // already matches — firmware re-applies the generic preset on ANY model
+  // write, including an unchanged value, so an equal write is NOT harmless.
+  // `ct_model_force:` (service) bypasses both the skip and the paired-class
+  // refusal: a deliberate preset re-apply.
   uint8_t current_ch0 = 0;
-  if (this->read_u8_(REG_CT_MODEL_CH0, &current_ch0) && current_ch0 == this->ct_model_) {
-    ESP_LOGD(TAG, "CT_MODEL ch0 already 0x%02X — no write needed (read-compare-write skip)", current_ch0);
+  const bool rb_ok = this->read_u8_(REG_CT_MODEL_CH0, &current_ch0);
+  if (!this->ct_model_force_) {
+    if (rb_ok && current_ch0 == this->ct_model_) {
+      ESP_LOGD(TAG, "CT_MODEL ch0 already 0x%02X — no write needed (read-compare-write skip)", current_ch0);
+      return;
+    }
+    uint8_t cls = 0;
+    if (this->read_u8_(REG_SENSOR_CLASS, &cls) && sensor_class_is_paired_(cls)) {
+      ESP_LOGW(TAG,
+               "ct_model refused: module is calibrated with its fitted sensor (class %u) — "
+               "a CT model write would replace that calibration with the generic preset. "
+               "Service path: `ct_model_force: true`.",
+               cls);
+      return;
+    }
+  } else {
+    ESP_LOGCONFIG(TAG, "  ct_model_force: service re-apply — skipping read-compare and paired-class guard");
+  }
+
+  if (!this->check_factory_mode_("CT model write")) {
     return;
   }
 
@@ -344,6 +1279,7 @@ void RbAmpComponent::apply_ct_model_() {
     return;
   }
   ESP_LOGCONFIG(TAG, "  CT_MODEL persisted; remove `ct_model:` from YAML after verification");
+  this->ct_model_written_this_boot_ = true;
 }
 
 bool RbAmpComponent::save_user_config_() {
@@ -375,13 +1311,35 @@ void RbAmpComponent::apply_sensor_class_() {
   }
 
   // S4 read-compare-write: skip the 700 ms flash erase entirely if the device
-  // already has the requested sensor_class. v1.3 read-back is direct (the
-  // register holds the applied value); on legacy firmware where REG_SENSOR_CLASS
-  // doesn't exist (returns 0 for unmapped reads), the comparison
-  // requested!=0 → write proceeds (correct fallback).
+  // already has the requested sensor_class. Firmware zeroes the ch0-2 models
+  // and clears the linearity shapes on ANY class write, including an unchanged
+  // value — the equal-skip is load-bearing, not an optimization. v1.3
+  // read-back is direct (the register holds the applied value); on legacy
+  // firmware where REG_SENSOR_CLASS doesn't exist the read succeeds with 0
+  // (unmapped reads return 0x00) → requested!=0 proceeds (correct fallback).
   uint8_t current = 0xFF;
-  if (this->read_u8_(REG_SENSOR_CLASS, &current) && current == this->sensor_class_request_) {
+  if (!this->read_u8_(REG_SENSOR_CLASS, &current)) {
+    ESP_LOGW(TAG, "Cannot read SENSOR_CLASS — skipping sensor_class apply "
+                  "(a blind class write could erase a factory-paired calibration)");
+    return;
+  }
+  if (current == this->sensor_class_request_) {
     ESP_LOGD(TAG, "SENSOR_CLASS already 0x%02X — no write needed (read-compare-write skip)",
+             current);
+    return;
+  }
+
+  // A factory-paired module (class WIRED_CT/BUILTIN_CT) never takes a class
+  // change from YAML — the write erases its individual calibration. No force
+  // path here (parity with esp-idf 1.7.2: re-classing a paired module is a
+  // factory operation, not a service one). Note the schema default
+  // `sensor_class: SCT_013` makes this line fire on every boot of a paired
+  // module — intended visibility, the request is simply ignored.
+  if (sensor_class_is_paired_(current)) {
+    ESP_LOGW(TAG,
+             "sensor_class refused: module is calibrated with its fitted sensor (class %u); "
+             "a SENSOR_CLASS write would erase that calibration. Remove `sensor_class:` from "
+             "YAML (or keep the default) — re-classing a paired module is a factory operation.",
              current);
     return;
   }
@@ -444,29 +1402,45 @@ void RbAmpComponent::apply_ct_models_per_channel_() {
   // Uses the same ct_model_read_ router as post-write verify, so the flat
   // vs window dispatch is single-site.
   const uint8_t n = this->n_channels_ > 0 ? this->n_channels_ : 1;
-  uint8_t current[16] = {0};
-  bool readback_ok = true;
-  for (uint8_t ch = 0; ch < n && ch < 16; ch++) {
-    if (!this->ct_model_read_(ch, &current[ch])) {
-      readback_ok = false;
-      break;
-    }
-  }
-  if (readback_ok) {
-    bool all_match = true;
+  if (!this->ct_model_force_) {
+    uint8_t current[16] = {0};
+    bool readback_ok = true;
     for (uint8_t ch = 0; ch < n && ch < 16; ch++) {
-      const uint8_t requested = this->ct_models_request_[ch];
-      if (requested == 0xFF) continue;
-      if (current[ch] != requested) { all_match = false; break; }
+      if (!this->ct_model_read_(ch, &current[ch])) {
+        readback_ok = false;
+        break;
+      }
     }
-    if (all_match) {
-      ESP_LOGD(TAG, "Per-channel CT models already match device state "
-               "(n_channels=%u) — no write needed (read-compare-write skip)", n);
+    if (readback_ok) {
+      bool all_match = true;
+      for (uint8_t ch = 0; ch < n && ch < 16; ch++) {
+        const uint8_t requested = this->ct_models_request_[ch];
+        if (requested == 0xFF) continue;
+        if (current[ch] != requested) { all_match = false; break; }
+      }
+      if (all_match) {
+        ESP_LOGD(TAG, "Per-channel CT models already match device state "
+                 "(n_channels=%u) — no write needed (read-compare-write skip)", n);
+        return;
+      }
+      ESP_LOGCONFIG(TAG, "  Per-channel CT models differ from device state — applying writes (n_channels=%u)", n);
+    } else {
+      ESP_LOGD(TAG, "CT model readback unavailable (legacy firmware or bus error) — applying writes unconditionally");
+    }
+
+    // Same paired-class refusal as the global ct_model path: a model write
+    // replaces the per-unit/paired gain+NF with the generic preset.
+    uint8_t cls = 0;
+    if (this->read_u8_(REG_SENSOR_CLASS, &cls) && sensor_class_is_paired_(cls)) {
+      ESP_LOGW(TAG,
+               "ct_models refused: module is calibrated with its fitted sensor (class %u) — "
+               "per-channel CT model writes would replace that calibration with generic "
+               "presets. Service path: `ct_model_force: true`.",
+               cls);
       return;
     }
-    ESP_LOGCONFIG(TAG, "  Per-channel CT models differ from device state — applying writes (n_channels=%u)", n);
   } else {
-    ESP_LOGD(TAG, "CT model readback unavailable (legacy firmware or bus error) — applying writes unconditionally");
+    ESP_LOGCONFIG(TAG, "  ct_model_force: service re-apply — skipping read-compare and paired-class guard (n_channels=%u)", n);
   }
 
   if (!this->check_factory_mode_("Per-channel CT model write")) return;
@@ -531,6 +1505,7 @@ void RbAmpComponent::apply_ct_models_per_channel_() {
     if (this->save_user_config_()) {
       ESP_LOGCONFIG(TAG, "  Per-channel CT models persisted (single SAVE_USER_CONFIG); "
                     "remove `ct_models:` from YAML after verification");
+      this->ct_model_written_this_boot_ = true;
     } else {
       ESP_LOGE(TAG, "  SAVE_USER_CONFIG failed after apply cycle — CT models APPLIED "
                "IN RAM ONLY and will revert on DUT power-cycle. Investigate.");
@@ -570,6 +1545,132 @@ bool RbAmpComponent::ct_model_read_(uint8_t ch, uint8_t *out) {
     return this->read_u8_(REG_CT_MODEL_CH0 + ch, out);
   }
   return this->read_channel_window_u8_lo_(CHFIELD_CT_MODEL, ch, out);
+}
+
+bool RbAmpComponent::read_applied_gain_(uint8_t ch, float *out) {
+  static constexpr uint8_t GAIN_ADDR[3] = {REG_I0_GAIN, REG_I1_GAIN, REG_I2_GAIN};
+  if (ch < 3) {
+    return this->read_float_le_(GAIN_ADDR[ch], out);
+  }
+  return this->read_channel_window_float_(CHFIELD_GAIN, ch, out);
+}
+
+bool RbAmpComponent::basic_reset_verify_uid_() {
+  // UID (12 bytes) before the reset. On v1.0-v1.2 firmware the block is
+  // unmapped and reads zeros — the compare then passes trivially, which is
+  // fine: single-module buses are the norm there.
+  uint8_t uid_before[12] = {0}, uid_after[12] = {0};
+  for (uint8_t i = 0; i < 12; i++) {
+    if (!this->read_u8_(REG_UID + i, &uid_before[i])) {
+      ESP_LOGW(TAG, "UID read before reset failed — skipping reset flow");
+      return false;
+    }
+  }
+  if (!this->write_u8_(REG_COMMAND, CMD_RESET)) {
+    ESP_LOGW(TAG, "CMD_RESET write failed");
+    return false;
+  }
+  App.feed_wdt();
+  delay(SETTLE_MS_RESET);
+  App.feed_wdt();
+  // Re-probe: the module must answer with a sane version byte again.
+  uint8_t ver = 0;
+  bool alive = false;
+  for (uint8_t attempt = 0; attempt < 5 && !alive; attempt++) {
+    alive = this->read_u8_(REG_VERSION, &ver) && ver != 0;
+    if (!alive)
+      delay(100);
+  }
+  if (!alive) {
+    ESP_LOGE(TAG, "Module did not come back after reset");
+    return false;
+  }
+  for (uint8_t i = 0; i < 12; i++) {
+    if (!this->read_u8_(REG_UID + i, &uid_after[i])) {
+      ESP_LOGW(TAG, "UID read after reset failed");
+      return false;
+    }
+  }
+  if (std::memcmp(uid_before, uid_after, 12) != 0) {
+    ESP_LOGE(TAG, "A DIFFERENT module answered after the reset (UID changed) — "
+                  "address collision on the bus?");
+    return false;
+  }
+  return true;
+}
+
+void RbAmpComponent::sct_rating_update_() {
+  namespace sct = sct_rating;
+  for (uint8_t ch = 0; ch < 7; ch++)
+    this->sct_scale_[ch] = 1.0f;
+  this->sct_enabled_ = false;
+  if (this->std_)
+    return;
+
+  // SENSOR_CLASS 1 (SCT-013) only. Class 2/3 modules are calibrated as a
+  // pair with their fitted sensor — the model byte is metadata, nothing to
+  // correct. Unreadable register (legacy fw, class implicitly SCT) → the
+  // model table still decides: unknown model codes come back s = 1.
+  uint8_t cls = 1;
+  if (this->read_u8_(REG_SENSOR_CLASS, &cls) && cls != 1) {
+    ESP_LOGD(TAG, "SCT rating correction: sensor class %u — not applicable", cls);
+    return;
+  }
+  this->sct_enabled_ = true;
+
+  // Firmware that performs the rating switch on-device advertises
+  // CAP_SCT_RATING_SELF (spec @581cdc4; reserved for fw 1.4.20) — then s = 1
+  // and a plain model write is enough. Shipped images ≤ 1.4.19 don't set it,
+  // so the master-side correction applies there.
+  const bool fw_handles = this->check_capability_(CAP_SCT_RATING_SELF);
+
+  bool reset_done = false;
+  for (uint8_t ch = 0; ch < this->n_channels_ && ch < 7; ch++) {
+    uint8_t model = 0;
+    float g_a = 0.0f;
+    if (!this->ct_model_read_(ch, &model) || !this->read_applied_gain_(ch, &g_a)) {
+      ESP_LOGW(TAG, "SCT rating ch%u: model/gain read failed — no correction (x1)", ch);
+      continue;
+    }
+    auto d = sct::decide(model, g_a, fw_handles, reset_done);
+    if (d.action == sct::Action::NEED_RESET) {
+      // The module applies the raw preset: the channel was switched in this
+      // boot (by us or by another master), so the factory trim is not in
+      // play. One reset restores the flash state; then re-run every channel.
+      ESP_LOGW(TAG, "SCT rating ch%u: model %u applies its raw preset (switched this "
+                    "boot) — resetting the module once to restore the factory trim",
+               ch, model);
+      if (!this->basic_reset_verify_uid_()) {
+        ESP_LOGE(TAG, "SCT rating: reset flow failed — corrections stay at x1");
+        return;
+      }
+      reset_done = true;
+      for (uint8_t c = 0; c < 7; c++)
+        this->sct_scale_[c] = 1.0f;
+      ch = static_cast<uint8_t>(-1);  // restart the scan from ch0
+      continue;
+    }
+    switch (d.action) {
+      case sct::Action::WARN_UNCAL:
+        ESP_LOGW(TAG, "SCT rating ch%u: gain is still the raw preset after a reset — "
+                      "uncalibrated module, applying rating correction only (x%.4f)",
+                 ch, d.s);
+        break;
+      case sct::Action::WARN_GAIN:
+        ESP_LOGW(TAG, "SCT rating ch%u: unexpected factory gain %.4f (not within 5%% of "
+                      "the cal-model value) — no correction (x1)", ch, g_a);
+        break;
+      case sct::Action::APPLY:
+        if (d.s != 1.0f) {
+          ESP_LOGCONFIG(TAG, "  SCT rating ch%u: model %u on a cal-model-calibrated "
+                             "module — readings scaled x%.4f", ch, model, d.s);
+        }
+        break;
+      default:
+        break;
+    }
+    this->sct_scale_[ch] = d.s;
+  }
 }
 
 bool RbAmpComponent::check_capability_(uint16_t bit) {
@@ -680,6 +1781,10 @@ void RbAmpComponent::apply_fleet_config_() {
 }
 
 bool RbAmpComponent::transmit_gc_frame() {
+  if (this->std_) {
+    ESP_LOGW(TAG, "transmit_gc_frame() is a BASIC-line feature — skipped on this device");
+    return false;
+  }
   if (!this->check_capability_(CAP_GC_LATCH)) {
     ESP_LOGW(TAG, "transmit_gc_frame() skipped — CAP_GC_LATCH not advertised");
     return false;
@@ -731,6 +1836,7 @@ bool RbAmpComponent::gc_witness_check_() {
 }
 
 std::string RbAmpComponent::get_variant_str() {
+  if (this->std_) return this->std_variant_str_();
   uint8_t v = 0;
   if (!this->read_u8_(REG_HW_VARIANT, &v)) return "UNK";
   switch (v) {
@@ -747,15 +1853,22 @@ std::string RbAmpComponent::get_variant_str() {
 }
 
 std::string RbAmpComponent::get_capability_hex() {
-  this->check_capability_(0);  // populate cached_capability_ as side-effect
   char buf[8];
+  if (this->std_) {
+    snprintf(buf, sizeof(buf), "0x%04X", this->std_caps_);
+    return std::string(buf);
+  }
+  this->check_capability_(0);  // populate cached_capability_ as side-effect
   snprintf(buf, sizeof(buf), "0x%04X", this->cached_capability_);
   return std::string(buf);
 }
 
 std::string RbAmpComponent::get_uid_hex() {
   uint8_t buf[12];
-  if (this->read_register(REG_UID, buf, 12) != i2c::ERROR_OK) {
+  const bool ok = this->std_
+      ? this->std_read_(rbamp_std::REG_UID, buf, 12)
+      : this->read_register(REG_UID, buf, 12) == i2c::ERROR_OK;
+  if (!ok) {
     return "UNREADABLE";
   }
   char hex[2 * 12 + 1] = {0};
@@ -768,6 +1881,19 @@ std::string RbAmpComponent::get_uid_hex() {
 
 std::string RbAmpComponent::get_last_error_str() {
   uint8_t e = 0;
+  if (this->std_) {
+    if (!this->std_read_(rbamp_std::REG_ERROR, &e, 1)) return "UNREADABLE";
+    switch (e) {
+      case rbamp_std::DEV_ERR_OK:          return "OK";
+      case rbamp_std::DEV_ERR_PARAM:       return "ERR_PARAM";
+      case rbamp_std::DEV_ERR_UNKNOWN_CMD: return "ERR_UNKNOWN_CMD";
+      default: {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "ERR_0x%02X", e);
+        return std::string(buf);
+      }
+    }
+  }
   if (!this->read_u8_(REG_ERROR, &e)) return "UNREADABLE";
   switch (e) {
     case DEV_ERR_OK:                return "OK";
@@ -787,12 +1913,18 @@ std::string RbAmpComponent::get_last_error_str() {
 }
 
 uint8_t RbAmpComponent::get_event_flags() {
+  if (this->std_) return 0;  // no EVENT_FLAGS register on the 16-bit line
   uint8_t f = 0;
   if (!this->read_u8_(REG_EVENT_FLAGS, &f)) return 0;
   return f;
 }
 
 bool RbAmpComponent::write_clear_error() {
+  if (this->std_) {
+    // Map 0x34+ auto-clears ERROR on each command dispatch — nothing to do.
+    ESP_LOGD(TAG, "clear_error is a no-op on the 16-bit line (ERROR auto-clears per command)");
+    return false;
+  }
   // Capability-gated: CAP_CLEAR_ERROR (bit10). On legacy firmware where the
   // opcode is unimplemented, the write may be silently dropped; caller
   // shouldn't rely on it without verifying capability.
@@ -806,16 +1938,26 @@ bool RbAmpComponent::write_clear_error() {
 bool RbAmpComponent::write_reset() {
   // RESET — the slave may NACK the ACK because RESET fires before the bus
   // cycle completes; treat the write result as advisory.
+  if (this->std_) {
+    const uint8_t op = static_cast<uint8_t>(rbamp_std::CMD_RESET);
+    this->write_register16(rbamp_std::REG_COMMAND, &op, 1);
+    return true;
+  }
   this->write_u8_(REG_COMMAND, CMD_RESET);
   return true;
 }
 
 bool RbAmpComponent::fleet_apply_now() {
+  if (this->std_) {
+    ESP_LOGW(TAG, "fleet_apply_now() is a BASIC-line feature — skipped on this device");
+    return false;
+  }
   this->apply_fleet_config_();
   return true;
 }
 
 uint16_t RbAmpComponent::read_gc_tick_received() {
+  if (this->std_) return 0xFFFF;  // BASIC-line feature
   uint8_t lo = 0, hi = 0;
   if (!this->read_u8_(REG_GC_TICK, &lo) || !this->read_u8_(REG_GC_TICK + 1, &hi)) {
     return 0xFFFF;  // "never received" sentinel
@@ -969,11 +2111,14 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
   // rationale (anti-revert doc baked into the upstream header @param period_ms).
   bool any_integrated = false;
   for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
+    // SCT rating-switch correction — the frozen average power is current-
+    // gain-proportional, so the energy integration scales with it.
+    const float sct_s = this->sct_scale_[ch];
     float avg_p = 0.0f;
     bool avg_p_ok;
     if (ch < 3) {
       // Flat block path (backwards compat)
-      avg_p_ok = this->read_float_le_(AVG_P_ADDR[ch], &avg_p) && sanity_power_(avg_p);
+      avg_p_ok = this->read_float_le_(AVG_P_ADDR[ch], &avg_p) && sanity_power_(avg_p * sct_s);
       if (!avg_p_ok) {
         ESP_LOGW(TAG, "Failed to read or validate PERIOD_AVG_P[%u] at 0x%02X — channel %u stays at previous integration window",
                  ch, AVG_P_ADDR[ch], ch);
@@ -984,12 +2129,13 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
       // the CMD_LATCH_PERIOD-frozen average power per channel (senior SKUs
       // UI5/UI7 ch3-6). Chip-side atomic latch on same instant as flat ch0-2.
       avg_p_ok = this->read_channel_window_float_(CHFIELD_PERIOD_AVG_P, ch, &avg_p)
-                 && sanity_power_(avg_p);
+                 && sanity_power_(avg_p * sct_s);
       if (!avg_p_ok) {
         ESP_LOGW(TAG, "Failed to read or validate PERIOD_AVG_P via window field=13 ch=%u — channel stays at previous integration window", ch);
         continue;
       }
     }
+    avg_p *= sct_s;
 
     // First successful read for this channel after boot: prime the clock,
     // do NOT integrate (no prior dt anchor).
@@ -1015,7 +2161,8 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
     // on primary channel ch0-2).
     if (ch < 3 && this->bidirectional_ && REG_PERIOD_AVG_P_NEG[ch] != 0xFF) {
       float avg_p_neg = 0.0f;
-      if (this->read_float_le_(REG_PERIOD_AVG_P_NEG[ch], &avg_p_neg) && sanity_power_(avg_p_neg)) {
+      if (this->read_float_le_(REG_PERIOD_AVG_P_NEG[ch], &avg_p_neg) && sanity_power_(avg_p_neg * sct_s)) {
+        avg_p_neg *= sct_s;
         this->energy_export_wh_[ch] += (double) avg_p_neg * dt_s / 3600.0;
         if (this->energy_exported_[ch] != nullptr) {
           this->energy_exported_[ch]->publish_state((float) this->energy_export_wh_[ch]);
@@ -1043,6 +2190,15 @@ void RbAmpComponent::finish_latch_phase_(uint32_t t_latch) {
 
 void RbAmpComponent::setup() {
   ESP_LOGCONFIG(TAG, "Setting up rbAmp at 0x%02X ...", this->address_);
+
+  // STD identity probe FIRST — order is mandatory (see the STD block comment
+  // in rbamp.h): a lone 8-bit pointer byte is taken by an STD slave as the
+  // pointer HIGH byte, so the BASIC probe would false-pass on an STD module.
+  if (this->std_probe_()) {
+    if (this->is_failed()) return;  // STD magic but unsupported map version
+    this->std_setup_();
+    return;  // BASIC setup path (appliers/prefs/latch primer) is 8-bit-only
+  }
 
   if (!this->probe_slave_()) {
     this->mark_failed();
@@ -1074,7 +2230,10 @@ void RbAmpComponent::setup() {
     if (this->energy_[ch] != nullptr) {
       this->energy_[ch]->publish_state((float) this->energy_total_wh_[ch]);
     }
-    if (this->energy_exported_[ch] != nullptr) {
+    // energy_exported_ / energy_export_wh_ are [3] (export is a ch0-2
+    // feature) while n_channels_ reaches 7 on UI5/UI7 — the ch<3 gate is a
+    // bounds guard, same as every other export index site.
+    if (ch < 3 && this->energy_exported_[ch] != nullptr) {
       this->energy_exported_[ch]->publish_state((float) this->energy_export_wh_[ch]);
     }
   }
@@ -1101,6 +2260,22 @@ void RbAmpComponent::setup() {
   if (any_per_channel) {
     this->apply_ct_models_per_channel_();
   }
+
+  // SCT rating switch (family spec): a model write leaves the module in the
+  // same-boot preset state (factory trim lost, seeded noise floor), so the
+  // canonical flow is SAVE → RESET → probe + same UID — do it whenever a
+  // model was actually written this boot (covers switching back to the cal
+  // model too, which the gain probe below cannot distinguish). Then compute
+  // the per-channel correction from the gain the module actually applies.
+  if (this->ct_model_written_this_boot_ && !this->check_capability_(CAP_SCT_RATING_SELF)) {
+    ESP_LOGCONFIG(TAG, "  CT model changed this boot — resetting the module to its flash state");
+    if (!this->basic_reset_verify_uid_()) {
+      ESP_LOGE(TAG, "Reset after the CT model write failed — the module stays in the "
+                    "same-boot state until its next power cycle");
+    }
+  }
+  this->sct_rating_update_();
+
   // Fleet config (REG_FLEET_CONFIG.bit0 + REG_GROUP_ID) — written before
   // address change because the device reset triggered by apply_fleet_config_
   // would otherwise come between the fleet writes and apply_address_change_'s
@@ -1128,6 +2303,11 @@ void RbAmpComponent::update() {
     return;
   }
 
+  if (this->std_) {
+    this->std_update_();
+    return;  // BASIC latch/RT path below is 8-bit-only
+  }
+
   // --- Period metering (LATCH cadence) ---
   // Master-side integration: E_Wh[ch] += avg_p_W[ch] × master_dt_s / 3600.
   // start_latch_phase_() issues the LATCH and schedules a non-blocking
@@ -1141,6 +2321,32 @@ void RbAmpComponent::update() {
   // finish_latch_phase_ uses the actual wall-clock dt (last_latch_ms_[ch])
   // — long LATCH intervals just mean coarser integration windows, not lost
   // energy.
+  // SCT rating correction: a module restart reverts the applied gain to the
+  // flash state (and may carry a model change made by another master), so a
+  // backwards uptime recomputes the scales. UPTIME_S is unmapped on older
+  // firmware (reads 0 constantly — never "decreases"), which degrades to
+  // compute-at-boot-only there.
+  if (this->sct_enabled_) {
+    uint8_t ub[4];
+    bool up_ok = true;
+    for (uint8_t i = 0; i < 4 && up_ok; i++)
+      up_ok = this->read_u8_(REG_UPTIME_S + i, &ub[i]);
+    if (up_ok) {
+      const uint32_t up = static_cast<uint32_t>(ub[0]) | (static_cast<uint32_t>(ub[1]) << 8) |
+                          (static_cast<uint32_t>(ub[2]) << 16) | (static_cast<uint32_t>(ub[3]) << 24);
+      // up == 0 is "unmapped register" (legacy fw streams zeros) — never prime
+      // on it, or every later zero would read as a restart.
+      if (up != 0) {
+        if (this->basic_prev_uptime_s_ != 0 && up < this->basic_prev_uptime_s_) {
+          ESP_LOGW(TAG, "Module restart detected (uptime %u -> %u s) — recomputing SCT "
+                        "rating correction", this->basic_prev_uptime_s_, up);
+          this->sct_rating_update_();
+        }
+        this->basic_prev_uptime_s_ = up;
+      }
+    }
+  }
+
   const uint32_t now = millis();
   const uint32_t latch_gate = this->latch_interval_ms_ > 0
                                   ? this->latch_interval_ms_
@@ -1151,7 +2357,8 @@ void RbAmpComponent::update() {
     this->start_latch_phase_();
   }
 
-  // --- Real-time block (0x86..0xCF, refreshed every ~200 ms by the device) ---
+  // --- Real-time block (0x86..0xCF, refreshed every ~100 ms by the device
+  // on fw v1.2+ — all shipped batches; ~200 ms on pre-v1.2 images) ---
   // Gate on STATUS bit0 (ready) — skip publish if the chip is mid-reset, in
   // a flash-write blackout, or has not yet committed its first window.
   uint8_t status = 0;
@@ -1189,14 +2396,22 @@ void RbAmpComponent::publish_rt_block_() {
   float i_rms_ch0 = 0.0f;
   bool i_rms_ch0_ok = false;
   for (uint8_t ch = 0; ch < this->n_channels_; ch++) {
+    // SCT rating-switch correction: scale BEFORE the sanity bounds so the
+    // bounds compare true amps of the fitted sensor (x1 unless the model was
+    // switched away from the cal model). U and PF never scale.
+    const float sct_s = this->sct_scale_[ch];
     float i_rms = 0.0f;
     bool i_rms_ok;
     if (ch < 3) {
       // Flat block path (backwards compat — single fast burst on shared bus)
-      i_rms_ok = this->read_float_le_(I_RMS_ADDR[ch], &i_rms) && sanity_current_(i_rms);
+      i_rms_ok = this->read_float_le_(I_RMS_ADDR[ch], &i_rms);
     } else {
       // Channel access window (senior SKU ch3-6): select + read, re-select every call
-      i_rms_ok = this->read_channel_window_float_(CHFIELD_I_RMS, ch, &i_rms) && sanity_current_(i_rms);
+      i_rms_ok = this->read_channel_window_float_(CHFIELD_I_RMS, ch, &i_rms);
+    }
+    if (i_rms_ok) {
+      i_rms *= sct_s;
+      i_rms_ok = sanity_current_(i_rms);
     }
     if (i_rms_ok) {
       if (this->current_[ch] != nullptr) {
@@ -1214,6 +2429,7 @@ void RbAmpComponent::publish_rt_block_() {
       bool p_ok = (ch < 3)
                   ? this->read_float_le_(P_REAL_ADDR[ch], &p_real)
                   : this->read_channel_window_float_(CHFIELD_P_REAL, ch, &p_real);
+      p_real *= sct_s;
       if (p_ok && sanity_power_(p_real) && this->power_[ch] != nullptr) {
         this->power_[ch]->publish_state(p_real);
       }
@@ -1232,9 +2448,9 @@ void RbAmpComponent::publish_rt_block_() {
       // those slots stay at NaN (HA renders "unknown"). Documented behaviour.
       if (ch < 3) {
         float q = 0.0f;
-        if (this->read_float_le_(Q_ADDR[ch], &q) && sanity_power_(q)
+        if (this->read_float_le_(Q_ADDR[ch], &q) && sanity_power_(q * sct_s)
             && this->reactive_power_[ch] != nullptr) {
-          this->reactive_power_[ch]->publish_state(q);
+          this->reactive_power_[ch]->publish_state(q * sct_s);
         }
       }
     }
@@ -1261,7 +2477,33 @@ void RbAmpComponent::publish_rt_block_() {
 void RbAmpComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "rbAmp:");
   LOG_I2C_DEVICE(this);
+  if (this->std_) {
+    ESP_LOGCONFIG(TAG, "  Line: 16-bit register map (map 0x%02X)", this->std_version_);
+    ESP_LOGCONFIG(TAG, "  Variant: %s, voltage channels: %u, current channels: %u",
+                  this->std_variant_str_(), this->n_voltage_, this->n_channels_);
+    ESP_LOGCONFIG(TAG, "  Capabilities: 0x%04X, status: 0x%02X", this->std_caps_, this->std_status_);
+    if (this->std_fw_ver_ != 0) {
+      ESP_LOGCONFIG(TAG, "  Image: 0x%08X", (unsigned) this->std_fw_ver_);
+    }
+    ESP_LOGCONFIG(TAG, "  Energy source: %s",
+                  this->std_ode_ ? (this->std_ode_fine_ ? "on-device counters (uWh)"
+                                                        : "on-device counters (mWh, coarse)")
+                                 : "master-side integration (latch)");
+    if (this->std_ode_fine_ && !this->std_ode_fine_rea_) {
+      ESP_LOGCONFIG(TAG, "  Reactive energy: coarse (varh) — this image has no uvarh counters");
+    }
+    if (this->start_current_ua_request_ != 0xFFFF) {
+      ESP_LOGCONFIG(TAG, "  Start current: %u uA", this->start_current_ua_request_);
+    }
+    LOG_UPDATE_INTERVAL(this);
+    return;
+  }
   ESP_LOGCONFIG(TAG, "  Firmware version: 0x%02X", this->firmware_version_);
+  for (uint8_t ch = 0; ch < this->n_channels_ && ch < 7; ch++) {
+    if (this->sct_scale_[ch] != 1.0f) {
+      ESP_LOGCONFIG(TAG, "  SCT rating correction ch%u: x%.4f", ch, this->sct_scale_[ch]);
+    }
+  }
   const char *topo_str = "SINGLE";
   switch (this->topology_) {
     case Topology::SPLIT_PHASE: topo_str = "SPLIT_PHASE"; break;
