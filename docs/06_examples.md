@@ -114,11 +114,10 @@ sensor:
 
   - platform: rbamp
     rbamp_id: boiler_meter
-    voltage:   { name: "Boiler Voltage", internal: true }   # energy needs voltage AND current
+    # I2 is a current-only module: it has no voltage input, so it reports currents only
+    # (power and energy need a UI module with voltage).
     current:   { name: "Boiler Current" }       # 20A CT
     current_1: { name: "Washer Current" }       # 10A CT
-    energy:    { name: "Boiler Energy" }
-    energy_1:  { name: "Washer Energy" }
 
   - platform: rbamp
     rbamp_id: panel_meter
@@ -145,8 +144,8 @@ sensor:
 [I][i2c:136]: Found i2c device at address 0x50
 [I][i2c:136]: Found i2c device at address 0x51
 [I][i2c:136]: Found i2c device at address 0x52
-[C][rbamp:450]: mains_meter:  variant=UI1, capability=0x0718, fleet_gc=on, group=1
-[C][rbamp:450]: boiler_meter: variant=I2,  capability=0x0618, fleet_gc=on, group=1
+[C][rbamp:450]: mains_meter:  variant=UI1, capability=0x…, fleet_gc=on, group=1
+[C][rbamp:450]: boiler_meter: variant=I2,  capability=0x…, fleet_gc=on, group=1
 [C][rbamp:450]: panel_meter:  variant=I3,  capability=0x…, fleet_gc=on, group=1
 [I][rbamp:493]: GC latch enabled fleet-wide: 3 modules in group 1
 
