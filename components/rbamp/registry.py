@@ -128,8 +128,8 @@ def _fallback() -> Tuple[
 ]:
     """Last-resort hardcoded map for the stand-alone / no-monorepo case.
 
-    Matches the pre-v1.6 shipping surface (SCT_013 codes 1-6 with 5 reserved,
-    WIRED_CT legacy slots 1-3). Anything newer requires the monorepo registry
+    Covers the SCT_013 line (codes 1-7, all accepted by BASIC firmware) and the
+    WIRED_CT legacy slots 1-3. Anything newer requires the monorepo registry
     — a stand-alone deployment on old firmware won't hit the new codes anyway.
     """
     models = {
@@ -138,13 +138,15 @@ def _fallback() -> Tuple[
         "SCT_013_020": 6,
         "SCT_013_030": 3,
         "SCT_013_050": 4,
+        "SCT_013_060": 7,
+        "SCT_013_100": 5,
         "WIRED_CT_1":  1,
         "WIRED_CT_2":  2,
         "WIRED_CT_3":  3,
     }
     allowed = {
         "UNSET":      set(),
-        "SCT_013":    {1, 2, 3, 4, 6},
+        "SCT_013":    {1, 2, 3, 4, 5, 6, 7},
         "WIRED_CT":   {1, 2, 3},
         "BUILTIN_CT": set(),
     }
@@ -153,7 +155,9 @@ def _fallback() -> Tuple[
         ("SCT_013", 2): "characterized",
         ("SCT_013", 3): "characterized",
         ("SCT_013", 4): "characterized",
+        ("SCT_013", 5): "characterized",
         ("SCT_013", 6): "characterized",
+        ("SCT_013", 7): "characterized",
         ("WIRED_CT", 1): "legacy",
         ("WIRED_CT", 2): "legacy",
         ("WIRED_CT", 3): "legacy",
@@ -163,7 +167,9 @@ def _fallback() -> Tuple[
         ("SCT_013", 2): "SCT-013-010, 10 A",
         ("SCT_013", 3): "SCT-013-030, 30 A",
         ("SCT_013", 4): "SCT-013-050, 50 A",
+        ("SCT_013", 5): "SCT-013-100, 100 A",
         ("SCT_013", 6): "SCT-013-020, 20 A",
+        ("SCT_013", 7): "SCT-013-060, 60 A",
         ("WIRED_CT", 1): "Toroid 1:1000 (legacy)",
         ("WIRED_CT", 2): "Toroid 1:2000 (legacy)",
         ("WIRED_CT", 3): "Toroid 1:3000 (legacy)",
