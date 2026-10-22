@@ -5,7 +5,7 @@ topology-field groups (mutually exclusive):
 
   - SINGLE-phase (current firmware): `voltage`, `current[/_1/_2]`,
     `power[/_1/_2]`, `energy[/_1/_2]`, etc.
-  - PHASED (future U2I2 / U3I3 SKU): `voltage_a/_b/_c`, `current_a/_b/_c`,
+  - PHASED (multi-phase modules): `voltage_a/_b/_c`, `current_a/_b/_c`,
     `power_a/_b/_c`, `energy_a/_b/_c`, `power_total`.
 
 Mixing the two groups in one block raises a validation error.
@@ -91,7 +91,7 @@ CONF_REACTIVE_POWER_4 = "reactive_power_4"
 CONF_REACTIVE_POWER_5 = "reactive_power_5"
 CONF_REACTIVE_POWER_6 = "reactive_power_6"
 
-# Phased keys (reserved for U2I2 / U3I3 future SKU)
+# Phased keys (multi-phase modules)
 CONF_VOLTAGE_A = "voltage_a"
 CONF_VOLTAGE_B = "voltage_b"
 CONF_VOLTAGE_C = "voltage_c"

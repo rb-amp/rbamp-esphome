@@ -103,7 +103,7 @@ bool RbAmpComponent::write_u8_(uint8_t reg, uint8_t val) {
 
 // v1.5 — Channel access window: select-and-read protocol for ch3+ on senior
 // SKUs (UI5/UI7). Fields 0=I_RMS, 1=I_PEAK, 2=P_REAL, 3=PF, 13=PERIOD_AVG_P.
-// Fields 4-12 are private (perimeter §3) — never used from library layer.
+// Fields 4-12 are not used by this component.
 //
 // CRITICAL: re-select on EVERY read. The window data buffer holds a snapshot
 // captured at select time; re-reading REG_CHANNEL_DATA without a new select
@@ -628,7 +628,7 @@ void RbAmpComponent::std_finish_latch_phase_(uint32_t t_latch) {
   if (nsamp == 0 || win_count == 0) {
     // The arm mask and bank state live in device RAM: a DUT reset clears
     // them, after which every latch snapshots an un-armed bank (nsamp=0)
-    // forever and energy silently freezes (bench HIL T5 defect, 2026-09-29).
+    // forever and energy silently freezes.
     // Detect the lost arm, re-arm, and re-prime the integration clocks —
     // the outage interval carries no data, so it is skipped, not estimated.
     uint8_t arm = 0;
@@ -1619,7 +1619,7 @@ void RbAmpComponent::sct_rating_update_() {
   this->sct_enabled_ = true;
 
   // Firmware that performs the rating switch on-device advertises
-  // CAP_SCT_RATING_SELF (spec @581cdc4; reserved for fw 1.4.20) — then s = 1
+  // CAP_SCT_RATING_SELF (firmware 1.4.20 and later) — then s = 1
   // and a plain model write is enough. Shipped images ≤ 1.4.19 don't set it,
   // so the master-side correction applies there.
   const bool fw_handles = this->check_capability_(CAP_SCT_RATING_SELF);
@@ -2443,8 +2443,8 @@ void RbAmpComponent::publish_rt_block_() {
       }
 
       // Reactive power (Q) — only exposed in the flat block (ch0-2). Not
-      // available via the public channel window (fields 4-12 private per
-      // perimeter §3). Skip Q publish on ch3+ — schema-declared sensors on
+      // available via the public channel window (fields 4-12 are not used
+      // here). Skip Q publish on ch3+ — schema-declared sensors on
       // those slots stay at NaN (HA renders "unknown"). Documented behaviour.
       if (ch < 3) {
         float q = 0.0f;

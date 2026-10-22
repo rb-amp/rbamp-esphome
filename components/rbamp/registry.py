@@ -19,11 +19,8 @@ Symbols exposed:
   Used by dump_config on the C++ side via cg.add(var.register_ct_model_descriptor_(...))
   if we ever wire it; currently for validator error messages only.
 
-Fallback: if the YAML is unreadable (e.g. component published stand-alone,
-no monorepo path), a MINIMAL hardcoded map is used (SCT_013 + WIRED_CT
-1..3 legacy) with a build-time warning. This keeps stand-alone consumers
-from breaking, while the monorepo path (real deployments) always drives
-from the registry.
+Stand-alone component (no repo-root YAML): the same registry is read from
+``sensor_models_gen.py``, generated next to this file by the codegen.
 """
 
 from __future__ import annotations
@@ -79,13 +76,33 @@ def _load_from_yaml() -> Tuple[
     class_by_code: Dict[int, str] = {
         c["code"]: c["name"] for c in reg.get("classes", [])
     }
+    return _build(class_by_code, reg.get("models", []))
+
+
+def _load_from_generated():
+    """Same registry, from ``sensor_models_gen.py`` generated next to this file
+    (the stand-alone component has no monorepo YAML)."""
+    from . import sensor_models_gen as gen
+
+    class_by_code = {
+        v: k[len("SENSOR_CLASS_"):] for k, v in vars(gen).items()
+        if k.startswith("SENSOR_CLASS_") and isinstance(v, int)
+    }
+    rows = [
+        {"class": cls, "code": code, "descriptor": desc, "status": st}
+        for (cls, code), (_name, desc, st) in gen.SENSOR_MODELS.items()
+    ]
+    return _build(class_by_code, rows)
+
+
+def _build(class_by_code, rows):
 
     models: Dict[str, int] = {}
     allowed: Dict[str, Set[int]] = {name: set() for name in class_by_code.values()}
     status: Dict[Tuple[str, int], str] = {}
     descriptors: Dict[Tuple[str, int], str] = {}
 
-    for row in reg.get("models", []):
+    for row in rows:
         class_code = row["class"]
         class_name = class_by_code.get(class_code)
         if class_name is None:
@@ -120,76 +137,13 @@ def _load_from_yaml() -> Tuple[
     return models, allowed, status, descriptors
 
 
-def _fallback() -> Tuple[
-    Dict[str, int],
-    Dict[str, Set[int]],
-    Dict[Tuple[str, int], str],
-    Dict[Tuple[str, int], str],
-]:
-    """Last-resort hardcoded map for the stand-alone / no-monorepo case.
-
-    Covers the SCT_013 line (codes 1-7, all accepted by BASIC firmware) and the
-    WIRED_CT legacy slots 1-3. Anything newer requires the monorepo registry
-    — a stand-alone deployment on old firmware won't hit the new codes anyway.
-    """
-    models = {
-        "SCT_013_005": 1,
-        "SCT_013_010": 2,
-        "SCT_013_020": 6,
-        "SCT_013_030": 3,
-        "SCT_013_050": 4,
-        "SCT_013_060": 7,
-        "SCT_013_100": 5,
-        "WIRED_CT_1":  1,
-        "WIRED_CT_2":  2,
-        "WIRED_CT_3":  3,
-    }
-    allowed = {
-        "UNSET":      set(),
-        "SCT_013":    {1, 2, 3, 4, 5, 6, 7},
-        "WIRED_CT":   {1, 2, 3},
-        "BUILTIN_CT": set(),
-    }
-    status = {
-        ("SCT_013", 1): "characterized",
-        ("SCT_013", 2): "characterized",
-        ("SCT_013", 3): "characterized",
-        ("SCT_013", 4): "characterized",
-        ("SCT_013", 5): "characterized",
-        ("SCT_013", 6): "characterized",
-        ("SCT_013", 7): "characterized",
-        ("WIRED_CT", 1): "legacy",
-        ("WIRED_CT", 2): "legacy",
-        ("WIRED_CT", 3): "legacy",
-    }
-    descriptors = {
-        ("SCT_013", 1): "SCT-013-005, 5 A",
-        ("SCT_013", 2): "SCT-013-010, 10 A",
-        ("SCT_013", 3): "SCT-013-030, 30 A",
-        ("SCT_013", 4): "SCT-013-050, 50 A",
-        ("SCT_013", 5): "SCT-013-100, 100 A",
-        ("SCT_013", 6): "SCT-013-020, 20 A",
-        ("SCT_013", 7): "SCT-013-060, 60 A",
-        ("WIRED_CT", 1): "Toroid 1:1000 (legacy)",
-        ("WIRED_CT", 2): "Toroid 1:2000 (legacy)",
-        ("WIRED_CT", 3): "Toroid 1:3000 (legacy)",
-    }
-    return models, allowed, status, descriptors
-
-
 try:
     CT_MODELS, CT_MODEL_ALLOWED_PER_CLASS, CT_MODEL_STATUS, CT_MODEL_DESCRIPTORS = (
         _load_from_yaml()
     )
     REGISTRY_SOURCE = _REGISTRY_PATH
-except Exception as exc:  # noqa: BLE001 — codegen must not hard-fail
-    import logging
-    logging.getLogger("rbamp").warning(
-        "sensor_models.yaml unavailable (%s); falling back to hardcoded shipping "
-        "map. New CT models (WIRED_CT_4..13) will be unknown to the schema.",
-        exc,
-    )
+except Exception:  # noqa: BLE001 — stand-alone component: generated copy
     CT_MODELS, CT_MODEL_ALLOWED_PER_CLASS, CT_MODEL_STATUS, CT_MODEL_DESCRIPTORS = (
-        _fallback()
+        _load_from_generated()
     )
-    REGISTRY_SOURCE = "hardcoded fallback"
+    REGISTRY_SOURCE = "sensor_models_gen.py"

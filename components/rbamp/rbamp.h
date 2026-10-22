@@ -104,7 +104,7 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   // 0xFFFF = never received. Useful for fleet-side correlation in HA.
   uint16_t read_gc_tick_received();
 
-  // S5 bench-test helpers — public read accessors for identity/diagnostic
+  // Public read accessors for identity/diagnostic
   // surfaces, callable from YAML lambda. Each does a fresh read at call time.
   uint8_t get_firmware_version() const { return firmware_version_; }
   uint16_t get_capability_cached() const { return cached_capability_; }
