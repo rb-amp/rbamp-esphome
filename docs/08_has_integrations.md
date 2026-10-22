@@ -97,7 +97,7 @@ If you change the key, you must remove and re-add the device in HA.
 
 ## 4 · Energy dashboard configuration
 
-The rbAmp `energy` sensors (and `energy_1`, `energy_2`, `energy_exported`, etc.) arrive already configured with:
+The rbAmp `energy` sensors (and `energy_1`, `energy_2`, `energy_exported`, `energy_total`, `energy_exported_total`, etc.) arrive already configured with (`energy_net` uses `state_class: total` because it can decrease; `reactive_energy*` are in varh):
 
 ```
 device_class: energy
@@ -105,7 +105,7 @@ state_class: total_increasing
 unit_of_measurement: Wh
 ```
 
-This is exactly the combination the HA Energy dashboard expects for cumulative consumption or generation sensors. No extra YAML is needed.
+This is exactly the combination the HA Energy dashboard expects for cumulative consumption or generation sensors. No extra template sensors are needed. Every energy sensor needs `voltage` and `current` declared in the same `sensor:` block (add `internal: true` to hide them from Home Assistant).
 
 ### Adding sensors to the Energy dashboard
 
@@ -113,9 +113,9 @@ Settings → Dashboards → Energy. The dashboard has four sections:
 
 | Section | Which rbAmp sensor to use |
 |---|---|
-| Grid consumption | `energy` (import from the grid) |
-| Return to grid | `energy_exported` (STANDARD / PRO tiers; reads 0 on BASIC and v1 firmware) |
-| Solar panels | `energy` from a module measuring the solar inverter's output |
+| Grid consumption | `energy` (import from the grid) or `energy_total` (STANDARD (STD), all channels) |
+| Return to grid | **Needs a STANDARD (STD) module** — a BASIC module always reads 0 for export. `energy_exported` needs `bidirectional: true` plus `voltage` and `current` in the same block; `energy_exported_total` covers all channels (STANDARD (STD) only) |
+| Solar panels | `energy` from a module measuring the solar inverter's output (STANDARD (STD) module if the same module must also report export) |
 | Home battery | Not applicable (rbAmp does not measure DC) |
 | Individual devices | `energy_1`, `energy_2`, etc. from a multi-channel module |
 
@@ -128,13 +128,13 @@ For a single whole-home install:
 For a three-module install (grid + solar + EV from Example 11 in [`06_examples.md`](06_examples.md)):
 
 1. Grid consumption: `House Energy` (from `meter_house`).
-2. Return to grid: `Solar Energy Exported` (from `meter_solar`, STANDARD / PRO tiers; leave empty on BASIC).
+2. Return to grid: `Solar Energy Exported` (from `meter_solar`, STANDARD (STD); leave empty on BASIC).
 3. Solar panels: `Solar Energy` (from `meter_solar`).
 4. Individual device: `EV Charger Energy` (from `meter_evcharger`).
 
 ### NVS persistence and the Energy dashboard
 
-The ESPHome component saves total energy to the ESP32's NVS every 5 minutes. On boot the values are restored from NVS and published immediately — **before** HA connects and **before** the first `update_interval` fires.
+The ESPHome component saves total energy to the ESP32's NVS every 5 minutes (and on a clean shutdown such as a reboot or OTA). On a STANDARD module the totals come from the module's own energy counters, so they also survive restarts of the module and stay monotonic. On boot the values are restored from NVS and published immediately — **before** HA connects and **before** the first `update_interval` fires.
 
 This keeps the Energy dashboard from interpreting a momentary `0 Wh` as a counter reset. If HA sees a `total_increasing` value drop to 0, it treats the difference as a billing-period boundary and discards the accumulated history.
 
@@ -187,6 +187,8 @@ see a discontinuity. This is the baseline scenario.
 
 The HA `utility_meter` integration derives periodically-resetting sensors from any `total_increasing` sensor. Use it to get daily, weekly, and monthly kWh in addition to the raw accumulator.
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 # configuration.yaml
 utility_meter:
@@ -212,6 +214,8 @@ Cost and kWh/day examples are in [`06_examples.md §10`](06_examples.md).
 ## 6 · Statistics sensor for min / max / average
 
 The HA `statistics` sensor computes rolling min, max, mean, and standard deviation over a configurable time window from the history of any sensor:
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 # configuration.yaml
@@ -260,6 +264,8 @@ The built-in HA Energy dashboard already includes an energy flow card at the top
 
 ### Gauge
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 type: gauge
 entity: sensor.rbamp_ui1_mains_power
@@ -274,6 +280,8 @@ severity:
 ```
 
 ### Sensor list card
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 type: entities
@@ -297,6 +305,8 @@ entities:
 
 Installed via HACS (§11):
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 type: custom:mini-graph-card
 entities:
@@ -311,6 +321,8 @@ show:
 ```
 
 ### Apex Charts (HACS)
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 type: custom:apexcharts-card
@@ -354,6 +366,8 @@ Both HA automations and ESPHome `on_value` callbacks react to changes in rbAmp s
 **Practical advice**: use ESPHome `on_value` for low-latency local actions (toggling a relay, an LED indicator, a buzzer), and HA automations for anything that needs HA services (notifications, scene activation, calendar scheduling, combinations with other entities).
 
 Example HA automation — combining rbAmp and an HA switch:
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 automation:
@@ -431,6 +445,8 @@ Installing and managing HACS is covered in its documentation. The cards are docu
 
 The HA mobile app (`home-assistant.io/integrations/mobile_app`) provides push notifications on iOS and Android. Combined with rbAmp sensors, you get instant alerts on over-current, over-power, loss of mains, or any other threshold:
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 automation:
   - alias: "rbAmp over-current alert"
@@ -479,7 +495,7 @@ When you use the HA ESPHome Add-on (recommended for most users):
 1. The Add-on stores the YAML configs in `/config/esphome/` (accessible through the HA file system or the Add-on's editor UI).
 2. `secrets.yaml` lives next to the device YAML files in `/config/esphome/`.
 3. The `external_components` path must be reachable from inside the Add-on container. Options:
-    - **Recommended:** use the remote form: `source: github://rb-amp/rbamp-esphome@main` (the component is published on GitHub).
+    - **Recommended:** use the remote form: `source: github://rb-amp/rbamp-esphome@v1.9.0` (the component is published on GitHub).
     - Alternatively, copy the `components/rbamp/` directory into `/config/esphome/components/` and specify `path: components/` (relative).
 4. OTA: the Add-on performs the OTA flash itself — click "Install" on the device card and the Add-on attempts an OTA to the last known IP. USB flashing is also available through the Add-on's serial port if the ESP32 is connected to the HA host.
 

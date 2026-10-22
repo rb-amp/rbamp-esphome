@@ -19,20 +19,21 @@ Cross-references:
 | **1** | **Mains + N sub-loads — the 80% canon** | UI1 + N× I2/I3 | Whole-home metering with a breakdown by sub-branches |
 | **2** | **Provisioning workflow (virgin → fleet)** | sequential single | Bring-up of a new batch of modules |
 | **3** | **Multi-channel mixed-CT (UI3 with different clamps)** | UI3 | Metering of mixed loads with accuracy optimization |
-| **4** | **Fleet GC sync (billing-grade synchrony)** | N× UI/I | Multi-tenant clusters or billing applications |
+| **4** | **Fleet GC sync (tight synchrony)** | N× UI/I | Multi-tenant clusters and sub-metering |
 | 5 | UI1 — single-channel (minimal) | UI1 | Hello-world single-module |
 | 6 | UI1 with customization | UI1 | All the standard ESPHome knobs |
 | 7 | UI3 — three-channel with mixed clamps | UI3 | Single-module multi-channel |
-| 8 | Multi-module bus (legacy sequential) | N× UI/I | No GC — fallback to sequential latch |
+| 8 | Multi-module bus (GC sync) | N× UI/I | `fleet_gc_enable` + `group_id` on three modules |
 | 9 | One-time I²C address change | single | Provisioning a single module |
 | 10..20 | HA integrations and automations | mixed | Production deployment patterns |
+| 21 | STANDARD (STD) module — on-device energy totals | any | Grand totals, reactive energy, `start_current_ua:` |
+| 22 | Switching the SCT rating, `ct_model_force` | any | Rating change without losing accuracy |
 
 > Scenarios 1-4 are the **flagship** ones, targeting the canonical v1.3
 > deployment of the package. Their code uses `fleet_gc_enable` + identity surface
-> + read-compare-write and is validated on bench hardware (a heterogeneous
-> UI1+I2+I3 fleet). Scenarios 5-20 are single-module and legacy compose
-> patterns. Scenario 8 is the deprecated per-module sequential latch without
-> fleet_gc, kept for comparison and as a migration path.
+> + read-compare-write and is exercised on a heterogeneous
+> UI1+I2+I3 setup. Scenarios 5-22 are single-module and compact
+> patterns. Scenario 8 is the short three-module bus configuration.
 
 ---
 
@@ -42,8 +43,8 @@ Cross-references:
 a heterogeneous fleet, closed within a single ESPHome boot (discovery → configure
 → enable GC → loop[publish_state + auto-emit GC tick]).
 
-**Hardware (HW-validated on the Fix-A fleet)**: UI1@0x50 + I2@0x51 + I3@0x52;
-~0.58 A load; an **external 4.7 kΩ pull-up** on SDA + SCL.
+**Hardware (UI1 + I2 + I3 test setup)**: UI1@0x50 + I2@0x51 + I3@0x52;
+~0.58 A load; pull-ups per the 3-module row of the [04_hardware.md](04_hardware.md#multi-module-bus-primary-topology) table (cut all, one external 2.7–3.3 kΩ pair).
 
 ```yaml
 esphome:
@@ -78,7 +79,7 @@ external_components:
     components: [rbamp]
 
 # Three rbAmp modules on shared bus, all with fleet_gc_enable + group_id=1
-# for synchronized period latching (billing-grade sync between mains + sub-meters).
+# for synchronized period latching (tight sync between mains + sub-meters).
 rbamp:
   - id: mains_meter         # UI1 on the mains feed
     address: 0x50
@@ -106,16 +107,17 @@ sensor:
     rbamp_id: mains_meter
     voltage:      { name: "Mains Voltage" }
     current:      { name: "Mains Current" }
-    power:        { name: "Mains Power" }
+    power:        { name: "Mains Power", id: mains_power_state }
     power_factor: { name: "Mains PF" }
     energy:       { name: "Mains Energy" }
     frequency:    { name: "Mains Frequency" }
 
   - platform: rbamp
     rbamp_id: boiler_meter
+    voltage:   { name: "Boiler Voltage", internal: true }   # energy needs voltage AND current
     current:   { name: "Boiler Current" }       # 20A CT
     current_1: { name: "Washer Current" }       # 10A CT
-    energy:    { name: "Boiler Energy" }        # current-only → only Wh if available
+    energy:    { name: "Boiler Energy" }
     energy_1:  { name: "Washer Energy" }
 
   - platform: rbamp
@@ -124,8 +126,7 @@ sensor:
     current_1: { name: "Appliances Current" }   # 30A CT
     current_2: { name: "Sub-panel Current" }    # 20A CT
 
-# Optional: HA template sensor for total household power via lambda
-sensor:
+  # Optional: template sensor for the household power (same sensor: list, not a second sensor: key)
   - platform: template
     name: "Household Total Power"
     update_interval: 60s
@@ -138,7 +139,7 @@ sensor:
       return v.has_state() ? v.state : 0.0f;
 ```
 
-### Bench output (HW-validated, ~0.58 A load)
+### Example output (~0.58 A load)
 
 ```text
 [I][i2c:136]: Found i2c device at address 0x50
@@ -146,7 +147,7 @@ sensor:
 [I][i2c:136]: Found i2c device at address 0x52
 [C][rbamp:450]: mains_meter:  variant=UI1, capability=0x0718, fleet_gc=on, group=1
 [C][rbamp:450]: boiler_meter: variant=I2,  capability=0x0618, fleet_gc=on, group=1
-[C][rbamp:450]: panel_meter:  variant=I3,  capability=0x069E, fleet_gc=on, group=1
+[C][rbamp:450]: panel_meter:  variant=I3,  capability=0x…, fleet_gc=on, group=1
 [I][rbamp:493]: GC latch enabled fleet-wide: 3 modules in group 1
 
 ITER 1 @ 60s: GC tick=1, 3/3 in_sync
@@ -164,10 +165,9 @@ ITER 1 @ 60s: GC tick=1, 3/3 in_sync
   (mains_meter). The sub-meters (I2/I3) are current-only, with no canonical P. In
   the 80% canon, `mains_power` ≈ the total power of all loads (mains_meter covers
   the feed).
-- **Wh = master wall-clock** (L9 canon). The ESPHome component integrates via
-  `millis()`, **NOT** via the chip-side `REG_PERIOD_LATCH_MS`. Validated on the
-  bench: master_dt/wall=0.999 vs latch_ms/wall=0.743 (chip undercount ~27%, see
-  [10_troubleshooting.md](10_troubleshooting.md) §3).
+- **Wh on BASIC modules is integrated on the ESP32** against its own clock (the time
+  between latches), so all modules of the fleet share one time base. STANDARD
+  modules keep their own energy counters, which the component accumulates.
 - **MISS-resilient.** If one module goes off-bus (provisioning / power cycle), the
   rest keep working; HA shows "Unavailable" for its entities until it recovers.
 
@@ -215,9 +215,8 @@ text_sensor:
 ```
 
 **Check**: in HA you should see `sensor.provision_ui1_variant == "UI1"` +
-`sensor.provision_ui1_capability == "0x0718"` (CAP_GC_LATCH +
-CAP_TWO_PHASE_ADDR + CAP_SAVE_USER_CONFIG + CAP_CLEAR_ERROR). Record the UID for
-inventory tracking.
+`sensor.provision_ui1_capability` showing a non-zero hex bitmap (`"0x0000"` means
+legacy firmware). Record the UID for inventory tracking.
 
 ### Step 2.2 — provision I2 (0x50 → 0x51 via two-phase commit)
 
@@ -240,7 +239,7 @@ rbamp:
 ```text
 [I][rbamp:xxx]: provisioning_target: probe at 0x50 → OK (variant=I2)
 [I][rbamp:xxx]: provisioning_target: new_address=0x51 requested
-[I][rbamp:xxx]: provisioning_target: CAP_TWO_PHASE_ADDR set → production path
+[I][rbamp:xxx]: provisioning_target: two-phase address change supported → production path
 [D][rbamp:xxx]: provisioning_target: stage REG_I2C_ADDRESS=0x51
 [D][rbamp:xxx]: provisioning_target: write REG_ADDR_COMMIT_MAGIC=0xA5
 [D][rbamp:xxx]: provisioning_target: send CMD_COMMIT_ADDR → wait 700ms
@@ -265,7 +264,7 @@ with `new_address: 0x52`, wait for re-enumeration, and update the YAML to
 
 Once provisioning of all modules is complete, update the YAML to the final fleet
 config (see scenario §1 above), disable the internal pull-ups on all modules
-except one (see [04_hardware.md](04_hardware.md)) + add an external 4.7 kΩ pair.
+(3 modules = cut all) and add one external pair of 2.7–3.3 kΩ at the ESP32 — see the pull-up table in [04_hardware.md](04_hardware.md#multi-module-bus-primary-topology).
 Flash the final YAML — all modules should be discovered:
 
 ```text
@@ -279,18 +278,17 @@ Flash the final YAML — all modules should be discovered:
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `Probe failed at 0x50` after flash | Module not powered or a broken contact | Check VCC + GND + SDA + SCL connectivity |
-| `[W] CAP_TWO_PHASE_ADDR not in capability` | Module on legacy firmware (v1.0-v1.2) | Single-phase fallback requires factory-provisioning mode (see [04_hardware.md](04_hardware.md)) |
+| `[W]` two-phase address change not supported | Module on legacy firmware (v1.0-v1.2) | Single-phase fallback requires factory-provisioning mode (see [04_hardware.md](04_hardware.md)) |
 | `[E] address change committed but re-probe at 0x51 failed` | Marginal bus or aborted commit | Retry the boot; if it repeats, the external pull-up is too weak or there's an EMI burst |
-| `[W] WARN_FACTORY_MODE_REQUIRED` | Legacy firmware without CAP_TWO_PHASE_ADDR | The supplier enables factory mode (out of scope for the library) |
+| `[W] WARN_FACTORY_MODE_REQUIRED` | Legacy firmware without two-phase address change | The supplier enables factory mode (out of scope for the library) |
 
 ---
 
 ## 3 · Multi-channel mixed-CT (UI3 with different clamps)
 
 **Goal**: to show that the CT model on different channels of a single module can
-be mixed according to the load characteristic. The A1 canon is descending
-iteration with order-independent bind, validated on the bench (mixed codes
-[1, 3, 6] → mirrors `01 03 06`, no clobber).
+be mixed according to the load characteristic. The component binds
+channels one by one; the order does not matter.
 
 ```yaml
 rbamp:
@@ -299,11 +297,8 @@ rbamp:
     sensor_class: SCT_013
     # Mixed-CT: small/medium/large on channels 0/1/2
     ct_models: [SCT_013_005, SCT_013_030, SCT_013_020]
-    # Order validated on the bench:
-    #   - ch2 binds first (SCT_013_020 = code 6) — REG_CT_MODEL=6 → CMD_SET_CT_MODEL_CH2 → SAVE
-    #   - ch1 next (SCT_013_030 = code 3) — REG_CT_MODEL=3 → CMD_SET_CT_MODEL_CH1 → SAVE
-    #   - ch0 settles last (SCT_013_005 = code 1) — REG_CT_MODEL=1 → CMD_SET_CT_MODEL_CH0 → SAVE
-    # Post-boot mirrors: REG_CT_MODEL_CH0=1, CH1=3, CH2=6 — no clobber
+    # The component binds channels one by one; the order does not matter.
+    # Each channel keeps its own model: ch0 = 5 A, ch1 = 30 A, ch2 = 20 A
     fleet_gc_enable: true
     group_id: 1
 
@@ -342,12 +337,11 @@ On a warm boot (mirrors match), with no flash write:
 [C][component:246]: Setup panel_meter took 72ms (warm boot: read-compare only)
 ```
 
-### Bench-validated facts
+### Observed behaviour
 
-- **Mixed CT binding**: codes [1, 3, 6] on the bench (Fix-A I3 @ 0x52) → mirrors
-  `01 03 06`, **no clobber**.
-- **Reserved code rejection**: an attempt at `ct_models: [SCT_013_100, ...]`
-  (code 5) → `esphome config` rejects the schema (cv.Invalid). If the YAML slips
+- **Mixed CT binding**: codes [1, 3, 6] on a three-channel module at 0x52 are each kept on their own channel.
+- **Invalid code rejection**: an attempt at a code outside the class's accepted set
+  → `esphome config` rejects the schema (cv.Invalid). If the YAML slips
   past the validator (manual edit / legacy build), the firmware returns
   `REG_ERROR = 0xFE DEV_ERR_PARAM`, with the mirror left at its prior value.
 - **Cold install timing**: ~2.1 s on the UI3 (3 × ~700 ms flash erase).
@@ -356,9 +350,9 @@ On a warm boot (mirrors match), with no flash write:
 
 ---
 
-## 4 · Fleet GC sync (billing-grade synchrony)
+## 4 · Fleet GC sync (tight synchrony)
 
-**Goal**: to show that fleet sync 3/3 is not academic but a real billing-grade
+**Goal**: to show that fleet sync 3/3 is not academic but a real
 requirement for multi-tenant deployments (sub-metering apartments in a shared
 panel) and for precise sub-metering (UI1 mains must match the sum of the
 sub-meter powers to within the duration of a single period).
@@ -393,10 +387,10 @@ api:
   services:
     - service: emit_gc_tenant1
       then:
-        - lambda: 'id(tenant1_mains).transmit_gc_frame(1, 0);'  # group=1
+        - lambda: 'id(tenant1_mains).transmit_gc_frame();'  # group = tenant1_mains group_id
     - service: emit_gc_tenant2
       then:
-        - lambda: 'id(tenant2_mains).transmit_gc_frame(2, 0);'  # group=2
+        - lambda: 'id(tenant2_mains).transmit_gc_frame();'  # group = tenant2_mains group_id
     - service: check_sync_all
       then:
         - lambda: |-
@@ -417,7 +411,7 @@ text_sensor:
     lambda: 'return std::to_string(id(tenant1_panel).read_gc_tick_received());'
 ```
 
-### Bench output (HW-validated, 10-iteration sync test)
+### Example output (10-iteration sync test)
 
 ```text
 [I][rbamp:572]: GC frame emit: group=1, tick=42, all 2 tenant1 modules ACK'd
@@ -443,18 +437,20 @@ GC frame. With `group_id`:
 - Tenant 2's modules respond only to GC frames with `group=2`
 
 This lets the master emit **separate** GC frames for the tenants at independent
-moments — for example, by billing cycle:
+moments — for example, by tenant period:
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 automation:
-  - alias: "Tenant 1 billing cycle latch"
+  - alias: "Tenant 1 period latch"
     trigger:
       platform: time_pattern
       seconds: "/60"            # every 60 s
     action:
       - service: esphome.<node>_emit_gc_tenant1
 
-  - alias: "Tenant 2 billing cycle latch"
+  - alias: "Tenant 2 period latch"
     trigger:
       platform: time_pattern
       seconds: "/15"            # every 15 s (high-resolution tenant)
@@ -480,8 +476,8 @@ automation:
   ```
   A discrepancy < 1% of mains_power on the bench = sync correct.
 
-- **L9 master-clock canon** — even with GC sync 3/3, wall-clock integration
-  guarantees billing-grade Wh accuracy (validated 0.0000% rel_err).
+- **Wall-clock integration** — even with GC sync 3/3, BASIC modules are integrated
+  against the ESP32's own clock, so a small skew between modules does not distort Wh.
 
 ---
 
@@ -751,8 +747,7 @@ rbamp:
   # CH0=5A for standby consumers and LED lighting,
   # CH1=30A for the main household loads,
   # CH2=20A for the boiler / a medium-power branch (~3-5 kW)
-  # NOTE v1.3: SCT_013_100 removed (reserved); for > 50A — multiple channels
-  # with SCT_013_050 in parallel or the roadmap WIRED_CT SKU.
+  # For currents above 50 A use SCT_013_060 (60 A) or SCT_013_100 (100 A).
 
 sensor:
   - platform: rbamp
@@ -803,7 +798,7 @@ sensor:
 ```
 
 **What it demonstrates**: all three channels of the UI3 SKU + mixed clamp models
-via `ct_models:`. The schema validator checks that `power_N` requires `current_N`
+via `ct_models:`. The schema validator checks that `power_N` and `energy_N` (and `power_factor_N`, `reactive_power_N`) require `current_N`
 and `voltage` — if you declare `power_1` without `current_1`, compilation fails
 with a clear message. Each channel has its own independent NVS-persisted
 accumulator `energy_*`. If all channels use the same clamp model, use the global
@@ -854,29 +849,31 @@ external_components:
 
 # Three independent rbamp: blocks — MULTI_CONF = True in the schema.
 # On v1.3 firmware the general-call latch is opt-in via fleet_gc_enable +
-# group_id (capability-gated via CAP_GC_LATCH). The legacy broadcast_latch:
-# key is still accepted as a deprecated alias — modules in the same group
-# latch in a single transaction, with ~540 µs skew per module. On legacy
+# group_id (capability-gated on the firmware side). Modules in the same
+# group latch in a single transaction, with ~540 µs skew per module. On legacy
 # firmware (v1.0..v1.2) the component falls back to a sequential latch
-# and logs an informational line.
+# and logs an informational line. (The old broadcast_latch: key is still
+# accepted by the schema but has no effect.)
 rbamp:
   - id: meter_house
     address: 0x50
     update_interval: 60s
-    broadcast_latch: true
+    fleet_gc_enable: true
+    group_id: 1
 
   - id: meter_solar
     address: 0x51
     update_interval: 60s
-    broadcast_latch: true
-    bidirectional: true     # the STANDARD / PRO tiers; energy_exported_*
-                             # publishes 0 until the export accumulator
-                             # appears in the firmware
+    fleet_gc_enable: true
+    group_id: 1
+    bidirectional: true     # needed for energy_exported_*; on BASIC it
+                             # publishes 0, on STANDARD it is real export energy
 
   - id: meter_evcharger
     address: 0x52
     update_interval: 60s
-    broadcast_latch: true
+    fleet_gc_enable: true
+    group_id: 1
 
 sensor:
   - platform: rbamp
@@ -952,15 +949,15 @@ A second constraint concerns address uniqueness on the bus:
 
 All three modules ship with factory 4.7 kΩ pull-ups. On a bus of three modules,
 the parallel combination is ~1.6 kΩ — higher current draw and marginal signal
-integrity at 50 kHz. Cut the pull-up solder jumpers on modules #2 and #3 (leave
-them only on #1, or place a single external 4.7 kΩ pair next to the ESP32). For
-more, see [04_hardware.md](04_hardware.md), the section on the multi-module bus.
+integrity at 50 kHz. Cut the pull-up solder jumpers on all three modules and place
+one external pair of 2.7–3.3 kΩ next to the ESP32 (the 3-module row of the table in
+[04_hardware.md](04_hardware.md#multi-module-bus-primary-topology)).
 
 ### Advanced: decoupled LATCH cadence for multi-module fleets *(v1.4+)*
 
 Fleet installations pay the LATCH-cycle cost per module per cycle: on a 3-module bus polling at `update_interval: 10s`, that's 3× the LATCH write + 3× the 50 ms settle window every 10 s — plus the RT-block reads on top. On ESP8266 hosts (single core; WiFi ISRs compete for CPU during I²C transactions) or shared I²C buses hosting other devices, that overhead becomes visible as WiFi glitches or stale readings on non-rbAmp entities.
 
-`latch_interval:` (available since v1.4) decouples the two cadences: RT-block reads (V/I/P/PF/Q) stay at `update_interval:` — the reader still sees fresh values on the dashboard — while the LATCH → snapshot → Wh integration only runs every `latch_interval:`. Wh accuracy is preserved: master-side integration uses actual wall-clock dt between LATCH events, so a 60 s LATCH interval just produces 60 s-wide (and still correct) integration steps.
+`latch_interval:` (available since v1.4, BASIC modules) decouples the two cadences: RT-block reads (V/I/P/PF/Q) stay at `update_interval:` — the reader still sees fresh values on the dashboard — while the LATCH → snapshot → Wh integration only runs every `latch_interval:`. Integration uses the actual wall-clock time between LATCH events, so a 60 s LATCH interval just produces 60 s-wide (and still correct) integration steps. `latch_interval` must be ≥ `update_interval`.
 
 ```yaml
 rbamp:
@@ -1056,7 +1053,8 @@ normally and the change procedure no longer runs.
 
 ### Revert checklist after a successful provisioning
 
-So as not to leave a "dangling" provisioning variant in the repository:
+So as not to leave a "dangling" provisioning variant in the repository
+(two alternatives, never paste both into one file):
 
 ```yaml
 # BEFORE (provisioning):
@@ -1065,7 +1063,9 @@ rbamp:
   address: 0x50               # the module's current address
   new_address: 0x51           # the provisioning target
   update_interval: 60s
+```
 
+```yaml
 # AFTER (production — applied next flash):
 rbamp:
   id: meter1
@@ -1083,7 +1083,7 @@ Exactly three edits:
 After step 3, the log should show a normal `dump_config` line without the
 warning `address change requested but current address matches new_address` —
 which means the revert was correct. See also
-[10_troubleshooting §4 "OTA right after `new_address:` provisioning won't load"](10_troubleshooting.md#ota-right-after-new_address-provisioning-wont-load)
+[10_troubleshooting §4 "OTA right after `new_address:` provisioning does not load"](10_troubleshooting.md#ota-right-after-new_address-provisioning-does-not-load)
 if the first OTA after the revert doesn't start.
 
 ---
@@ -1206,6 +1206,8 @@ sensor:
 
 ### HA automation: alert on loss of mains
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 # configuration.yaml or the Automations UI
 automation:
@@ -1255,20 +1257,36 @@ without a false "counter reset" in the HA statistics.
 
 ```yaml
 # Example: consumption + solar export for the HA Energy dashboard
+# (assumes the rbamp: blocks meter_house and meter_solar from the multi-module example)
+# energy / energy_exported need voltage AND current in the same block;
+# internal: true keeps them out of Home Assistant.
 sensor:
   - platform: rbamp
     rbamp_id: meter_house
+    voltage:
+      name: "House Voltage"
+      internal: true
+    current:
+      name: "House Current"
+      internal: true
     energy:
       name: "House Grid Import"    # → HA Energy: grid consumption
 
   - platform: rbamp
     rbamp_id: meter_solar
+    voltage:
+      name: "Solar Voltage"
+      internal: true
+    current:
+      name: "Solar Current"
+      internal: true
     energy:
       name: "Solar Production"     # → HA Energy: solar production
     energy_exported:
       name: "Solar Grid Export"    # → HA Energy: return to grid
-                                   # reads 0 until the export accumulator
-                                   # for STANDARD/PRO appears in the firmware
+                                   # needs bidirectional: true in rbamp:;
+                                   # real values on STANDARD (STD) modules,
+                                   # reads 0 on BASIC
 ```
 
 ---
@@ -1276,6 +1294,8 @@ sensor:
 ## 13 · HA automations on rbAmp sensors
 
 ### Load shedding: a relay turns off when a threshold is exceeded
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 automation:
@@ -1306,6 +1326,8 @@ automation:
 
 ### Power factor correction reminder
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 automation:
   - alias: "Poor power factor notification"
@@ -1326,6 +1348,8 @@ automation:
 
 ### Daily budget overrun alert
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 automation:
   - alias: "Daily energy budget — warning at 10 kWh"
@@ -1345,6 +1369,8 @@ automation:
 
 ### Gauge — live power
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 type: gauge
 entity: sensor.rbamp_ui1_mains_power
@@ -1362,6 +1388,8 @@ segments:
 
 ### Apex Charts — power over time
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 type: custom:apexcharts-card
 header:
@@ -1376,6 +1404,8 @@ series:
 ```
 
 ### Apex Charts — energy comparison across three channels
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 type: custom:apexcharts-card
@@ -1394,6 +1424,8 @@ series:
 
 ### Mini graph — voltage
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 type: custom:mini-graph-card
 entities:
@@ -1410,7 +1442,9 @@ line_width: 2
 
 ESPHome publishes cumulative totals in Wh. The HA `utility_meter` integration
 resets the counter at configurable intervals and publishes the delta as a separate
-sensor — handy for daily or monthly billing breakdowns.
+sensor — handy for daily or monthly breakdowns.
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 # configuration.yaml
@@ -1440,6 +1474,8 @@ accumulates the delta from the source `total_increasing` sensor.
 `utility_meter` outputs Wh by default. To display in kWh, add a `template`
 sensor:
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 template:
   - sensor:
@@ -1452,6 +1488,8 @@ template:
 ```
 
 ### Daily cost sensor
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 template:
@@ -1471,6 +1509,8 @@ template:
 
 Installing three rbAmp modules in a distribution panel lets you do per-circuit
 energy metering with no smart panel or extra hardware.
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 # Extending the multi-module example with per-circuit utility meters
@@ -1513,6 +1553,8 @@ switch:
 With rbAmp and a relay on the same ESP32, you can build a closed loop right in
 ESPHome (via a Lambda or `on_value`) with no round trip through HA:
 
+*Assumes you already have a `switch:` entry with the id used below.*
+
 ```yaml
 sensor:
   - platform: rbamp
@@ -1541,9 +1583,9 @@ example for a boiler is in [07_diy_integrations.md](07_diy_integrations.md).
 
 ## 18 · DRDY integration
 
-The module's open-drain DRDY pin gives a LOW pulse of ~10 µs every ~200 ms after
-the instantaneous registers are updated. You can wire it to an ESP32 GPIO and use
-it as an interrupt hint instead of polling on a fixed timer.
+The module's open-drain DRDY pin gives a LOW pulse of ~10 µs every ~100 ms after
+the instantaneous registers are updated. You can wire it to an ESP32 GPIO.
+The component logs the DRDY pin; reads are timer-driven (`update_interval`).
 
 ```yaml
 rbamp:
@@ -1560,28 +1602,21 @@ rbamp:
 
 > **Note**: on the current firmware the component logs `drdy_pin` in
 > `dump_config` but does not implement interrupt-driven RT reads — the
-> `update_interval` still sets the polling rate. You can wire the pin up ahead of
-> time for future firmware revisions with no code changes.
+> `update_interval` still sets the polling rate.
 
 ---
 
-## 19 · Preparing for future split-phase / three-phase SKUs
+## 19 · Phased sensors (split-phase / three-phase variants)
 
-The component schema already accepts phased sensor fields (`voltage_a/b/c`,
-`current_a/b/c`, `power_a/b/c`, `energy_a/b/c`, `power_factor_a/b/c`,
-`reactive_power_a/b/c`, `power_total`). They are reserved for the upcoming
-rbAmp-U2I2 (split-phase US) and rbAmp-U3I3 (three-phase Europe) SKUs.
-
-If you're preparing YAML for a future three-phase deployment today, you can
-describe the full phased block and validate it now. On the current firmware it
-compiles cleanly (there just won't be real registers to read). The schema
-validator checks that single and phased groups are not mixed in one `sensor:`
-block.
+For modules with more than one voltage input the component offers a phased
+sensor group (`voltage_a/b/c`, `current_a/b/c`, `power_a/b/c`, `energy_a/b/c`,
+`power_factor_a/b/c`, `reactive_power_a/b/c`, `power_total`, plus
+`voltage_angle_b/c`). A slot publishes only when the connected module reports
+the corresponding channel; on a single-voltage module the phased slots stay
+without a value. The schema checks that single and phased groups are not mixed
+in one `sensor:` block.
 
 ```yaml
-# Forward-compat three-phase config — compiles today, sensor data
-# will become available when the rbAmp-U3I3 firmware ships. DO NOT USE on
-# current single-channel UI* — readings will be 0.
 sensor:
   - platform: rbamp
     rbamp_id: meter1
@@ -1605,20 +1640,19 @@ sensor:
       name: "Phase C Power"
     power_total:
       name: "Total Power"
-    energy_a:
-      name: "Phase A Energy"
-    energy_b:
-      name: "Phase B Energy"
-    energy_c:
-      name: "Phase C Energy"
+    voltage_angle_b:
+      name: "Phase B Angle"        # degrees vs phase A
+    voltage_angle_c:
+      name: "Phase C Angle"
+    phase_sequence:
+      name: "Phase Sequence"       # 1 forward, 2 reverse, 3 abnormal
     frequency:
       name: "Grid Frequency"
 ```
 
 **What it demonstrates**: the phased field group. Mixing single and phased fields
-in one `sensor:` block produces a compile-time error — choose the group for your
-hardware SKU. The topology field group and SKU variant detection are documented
-in [09 · API reference](09_api_reference.md).
+in one `sensor:` block produces a compile-time error — choose the group that
+matches your module. Details are in [09 · API reference](09_api_reference.md) §2.2.
 
 ---
 
@@ -1650,8 +1684,11 @@ sensor:
       name: "Mains Frequency"
     power_factor:
       name: "Mains Power Factor"
+```
 
+```yaml
 # After (rbamp, I²C) — the same sensor names → the same entity IDs in HA
+# (replaces the block above; do not paste both)
 i2c:
   sda: GPIO21
   scl: GPIO22
@@ -1692,6 +1729,76 @@ Same pattern. `cse7766` provides `voltage`, `current`, `power`, `energy`,
 
 ---
 
+## 21 · STANDARD module — on-device energy totals
+
+On a STANDARD module the component accumulates the module's own energy counters.
+Totals survive restarts of both the ESP32 and the module and stay monotonic. The
+same YAML works on a BASIC module too, except that the grand-total keys then
+never publish.
+
+```yaml
+rbamp:
+  id: meter1
+  address: 0x50
+  update_interval: 30s
+  bidirectional: true          # per-channel energy_exported
+  start_current_ua: 400        # no energy counted below 400 µA per channel
+
+sensor:
+  - platform: rbamp
+    rbamp_id: meter1
+    voltage:
+      name: "Mains Voltage"
+    current:
+      name: "Mains Current"
+    power:
+      name: "Mains Power"
+    energy_total:
+      name: "Energy Imported"          # all channels, total_increasing
+    energy_exported_total:
+      name: "Energy Exported"          # all channels, total_increasing
+    energy_net:
+      name: "Energy Net"               # import - export, may decrease
+    reactive_energy:
+      name: "Reactive Energy Imported" # varh
+    reactive_energy_exported:
+      name: "Reactive Energy Exported"
+```
+
+**What it demonstrates**: the grand-total sensors, which need no companion
+`current`/`voltage` declaration; `start_current_ua:` (`0` = off, otherwise
+`10`..`2540` in steps of `10`) so that noise at no load does not creep into the
+import and export counters (instantaneous readings are unaffected). For the HA
+Energy dashboard use `energy_total` as grid consumption and
+`energy_exported_total` as return to grid.
+
+---
+
+## 22 · Switching the SCT rating and service override
+
+```yaml
+rbamp:
+  id: meter1
+  ct_model: SCT_013_010      # module was delivered with the SCT-013-030
+```
+
+Readings stay accurate after the switch: on module firmware up to 1.4.19 the
+component completes the model write with the required module restart (visible in
+the log) and scales current, power and energy to the selected sensor; newer
+firmware does it on the module. A value the module already holds is never
+rewritten, and on a module supplied calibrated together with its own fitted
+sensor (`sensor_class: WIRED_CT` / `BUILTIN_CT`) the change is refused with a log
+line. Only for a deliberate preset re-apply:
+
+```yaml
+rbamp:
+  id: meter1
+  ct_model: SCT_013_010
+  ct_model_force: true       # one-off service option; remove both lines afterwards
+```
+
+---
+
 ## YAML validation rules summary
 
 | Rule | Enforced by |
@@ -1701,8 +1808,13 @@ Same pattern. `cse7766` provides `voltage`, `current`, `power`, `energy`,
 | Single and phased groups are not mixed in one `sensor:` | `_validate_topology_consistency` |
 | `new_address` ≠ `address` | `_validate_new_address` |
 | `address` in the range `0x08..0x77` | `cv.i2c_address` |
-| `update_interval` minimum `1s`, enforced | `cv.positive_time_period_milliseconds(min=1000)` |
+| `update_interval` minimum `1s`, enforced | Schema validator |
+| `latch_interval` ≥ `update_interval` | Schema validator |
 | `ct_model:` and `ct_models:` are mutually exclusive | Schema validator |
+| `ct_models:` has 1..16 entries | Schema validator |
+| `ct_model_force: true` requires `ct_model:` or `ct_models:` | Schema validator |
+| `start_current_ua` is `0` or `10`..`2540` in steps of `10` | Schema validator |
+| CT model code is valid for the pinned `sensor_class` | Schema validator |
 
 Validation errors are reported at `esphome compile` time with a human-readable
 message pointing to the offending key. You don't need to flash hardware to find a

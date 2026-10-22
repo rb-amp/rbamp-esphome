@@ -6,16 +6,18 @@
 
 This chapter is the complete reference for the YAML schema of the `rbamp` external component for ESPHome. If a key is not listed here, it does not exist in the schema.
 
+**One YAML for both module lines.** At boot the component identifies which module line is connected (BASIC or STANDARD (STD)) and adapts automatically: channel count, variant and available features come from the module itself, so no `topology:` key and no tier switch are needed in YAML. Keys that apply to only one generation are marked below; a key the connected module cannot honour is ignored with a log line, never a hard failure.
+
 Contents:
 
 1. [Component block — `rbamp:`](#1-component-block--rbamp)
 2. [Sensor platform — `sensor.platform: rbamp`](#2-sensor-platform--sensorplatform-rbamp)
     - [Single fields (single-phase)](#21-single-fields)
-    - [Phased fields (future SKUs)](#22-phased-fields-future-skus)
+    - [Phased fields (multi-voltage variants)](#22-phased-fields-multi-voltage-variants)
     - [Shared fields](#23-shared-fields-topology-independent)
     - [Validation rules](#24-schema-validation-rules)
 3. [Data flow and timing](#3-data-flow-and-timing)
-4. [I²C bus settings](#4-ic-bus-settings)
+4. [I2C bus settings](#4-i2c-bus-settings)
 
 ---
 
@@ -35,9 +37,14 @@ rbamp:
   # ct_models: [SCT_013_005, SCT_013_030, SCT_013_020]
   bidirectional: false
   new_address: 0x51
-  broadcast_latch: false
-  topology: SINGLE
+  fleet_gc_enable: false
+  group_id: 0
+  latch_interval: 60s
+  start_current_ua: 400     # STANDARD only, see below
+  # ct_model_force: true    # service option, see below
 ```
+
+Every key is optional. `topology:` and `broadcast_latch:` are still accepted for backward compatibility (see their entries).
 
 ---
 
@@ -89,15 +96,13 @@ Cross-reference: [the I²C bus protocol](https://www.rbamp.com/docs/modules-basi
 
 How often `update()` runs. Each call:
 
-1. Sends the latch command and schedules a non-blocking 50 ms timeout for reading the period snapshot.
+1. Sends the latch command and schedules a non-blocking 50 ms timeout for reading the period snapshot (BASIC modules; on STANDARD modules energy comes from the module's own counters, see [`energy_total`](#energy_total--energy_exported_total--energy_net)).
 2. Checks the status register; if the module is ready, publishes all bound instantaneous sensors.
 
-The 60 s default is reasonable: the module internally updates its period-average power roughly every ~200 ms, but integrating energy on the master side requires a long enough window to be correct. At 60 s and an average load of 60 W, a missed latch loses ≤ 1 Wh.
+The 60 s default is reasonable: the module internally updates its period-average power roughly every ~100 ms, but integrating energy on the master side requires a long enough window to be correct. At 60 s and an average load of 60 W, a missed latch loses ≤ 1 Wh.
 
-The minimum allowed value in v1.3 is **`1s`** (validated by the schema via
-`cv.positive_time_period_milliseconds(min=1000)`). Anything smaller causes
-`esphome config` to reject the configuration with a friendly diagnostic.
-Values below 5-10 s offer no benefit for billing-grade accuracy and just clutter
+The minimum allowed value is **`1s`**: the schema rejects anything smaller, and `esphome config` reports a diagnostic.
+Values below 5-10 s offer no benefit for tight synchronization and just clutter
 the bus.
 
 ```yaml
@@ -118,7 +123,7 @@ rbamp:
 
 How often the component sends the LATCH command and integrates a Wh sample. When set, decouples the LATCH cycle from the RT-read cadence — `update_interval:` continues to control how often V/I/P/PF/Q registers are read and published, while `latch_interval:` controls how often the period accumulator is snapshotted and Wh is integrated.
 
-Wh accuracy is preserved regardless of the ratio: master-side integration uses actual wall-clock dt between successive LATCH events, so longer LATCH intervals just produce coarser (and still correct) integration steps.
+Energy integration adds no error of its own beyond the module's active-power accuracy, regardless of the ratio: master-side integration uses the actual wall-clock dt between successive LATCH events, so longer LATCH intervals just produce coarser integration steps.
 
 Must be `>= update_interval` (setting it shorter is rejected at config validation — the extra LATCHes would produce no observable data).
 
@@ -144,7 +149,7 @@ Useful when bus load or master-side CPU competition matters — multi-module fle
 
 Connects the module's open-drain DRDY output to a GPIO on the ESP32. When specified, the pin is configured in `setup()` at boot.
 
-> On the current firmware the pin is logged in `dump_config` but is not used as a read trigger — the instantaneous registers are polled on `update_interval`. Declaring the pin does not change behavior, but it reserves it for future firmware revisions with interrupt-driven reads.
+> The pin is logged in `dump_config` but is not used as a read trigger — the instantaneous registers are polled on `update_interval`. Declaring the pin does not change behavior.
 
 ```yaml
 rbamp:
@@ -163,11 +168,13 @@ rbamp:
 
 Fixes the current-sensor family on the module side. On firmware v1.2+ the value is written to flash and becomes a **precondition** for writing the CT model: the module will refuse to write the model if the class is not set. On earlier firmware the value is accepted by the schema and is applied automatically on upgrade.
 
-| Value | Status |
+| Value | Meaning |
 |---|---|
-| `SCT_013` | Available now, default |
-| `WIRED_CT` | Reserved for future SKUs |
-| `BUILTIN_CT` | Reserved for future SKUs |
+| `SCT_013` | Split-core SCT-013 clamps — the default |
+| `WIRED_CT` | Module supplied calibrated together with its own fitted sensor |
+| `BUILTIN_CT` | Module supplied calibrated together with its own built-in sensor |
+
+**Write guard.** The component never writes a class the module already has (a repeat boot writes nothing). On a module that was calibrated as a pair with its fitted sensor (`WIRED_CT` / `BUILTIN_CT`), a class or model change from YAML is **refused** with an explicit log line — the write would replace the individual calibration with a generic setting. Leave `sensor_class:` and `ct_model:` out of the YAML for such modules, or see [`ct_model_force`](#ct_model_force).
 
 ```yaml
 rbamp:
@@ -186,7 +193,7 @@ For more on choosing the clamp and family, see [03_sensor_selection.md](03_senso
 | Default | None (optional) |
 | Required | No |
 
-Writes the CT clamp model identifier to the module's flash. On firmware v1.2+ this automatically loads the factory coefficients for the chosen model — no additional calibration steps are required.
+Writes the CT clamp model identifier to the module's flash. On firmware v1.2+ this automatically loads the factory coefficients for the chosen model — no additional calibration steps are required. A value equal to what the module already has is not written.
 
 | YAML value | Code | Nominal current | Status v1.3 |
 |---|:---:|---|---|
@@ -196,9 +203,9 @@ Writes the CT clamp model identifier to the module's flash. On firmware v1.2+ th
 | `SCT_013_030` | 3 | 30 A | production (default SKU) |
 | `SCT_013_050` | 4 | 50 A | production |
 
-> `SCT_013_100` (code 5) was **removed in v1.3** — the code is reserved in
-> firmware and returns `DEV_ERR_PARAM`. The per-class accept-set for `SCT_013`
-> is `{1, 2, 3, 4, 6}` (non-contiguous). Non-matching values are rejected
+> The per-class accept-set for `SCT_013` is `{1, 2, 3, 4, 5, 6, 7}`
+> (`SCT_013_100` is code 5, `SCT_013_060` is code 7; the code order is not
+> the rating order). Non-matching values are rejected
 > at `esphome config` via `cv.Invalid`. For more, see
 > [03 · Current-sensor selection](03_sensor_selection.md#per-class-ct-validation-new-in-v13).
 
@@ -208,6 +215,10 @@ rbamp:
 ```
 
 Applied once in `setup()`. Each write is accompanied by a ~700 ms flash-write (the module NACKs all I²C operations during this time — the component feeds the watchdog automatically).
+
+**Changing the SCT rating keeps the accuracy.** Every SCT module is calibrated at the factory with the SCT-013-030. When you select another rating, current, power and energy stay correct: on firmware up to 1.4.19 the component completes the model write with a module restart (this is part of the normal flow and shows in the log), then scales readings to the selected sensor; newer firmware performs the switch on the module and the component leaves the readings untouched. Voltage and power factor are not affected. No YAML change is needed for this.
+
+**Write guard.** An equal value is never written, and on a factory-paired module (`sensor_class: WIRED_CT` / `BUILTIN_CT`) the write is refused with a log line — see [`sensor_class`](#sensor_class).
 
 **Mutually exclusive** with `ct_models:` — only one of the two may be used per `rbamp:` block.
 
@@ -219,11 +230,11 @@ For more, see [03_sensor_selection.md](03_sensor_selection.md). Cross-reference:
 
 | Attribute | Value |
 |---|---|
-| Type | list of **1–3** enum values |
+| Type | list of **1–16** enum values |
 | Default | None (optional) |
 | Required | No |
 
-Per-channel CT clamp models — for UI2/UI3 with mixed clamps on different channels. Accepts the same enum values as `ct_model:`. The schema validates the array length via `cv.Length(min=1, max=3)`; the number of elements must match the number of physical channels on the module (1 for UI1, 2 for UI2, 3 for UI3).
+Per-channel CT clamp models — for modules with mixed clamps on different channels. Accepts the same enum values as `ct_model:`. The schema accepts 1 to 16 entries; the position in the list is the channel index. The component applies as many entries as the module has channels (1 for UI1, 2 for UI2, 3 for UI3, and so on); extra entries are ignored with a warning.
 
 ```yaml
 rbamp:
@@ -232,12 +243,59 @@ rbamp:
   # CH0=5A for standby loads (maximum resolution),
   # CH1=30A for main household loads,
   # CH2=20A for a water heater / medium-power branch (~3-5 kW)
-  # NOTE v1.3: SCT_013_100 reserved; for > 50A — several SCT_013_050 in parallel or a WIRED_CT SKU (roadmap)
+  # For currents above 50 A use SCT_013_060 (60 A) or SCT_013_100 (100 A)
 ```
 
 On firmware v1.2+ each channel gets its own set of factory coefficients independently. The total setup time at boot is ~2-3 seconds (~700 ms flash-write per channel).
 
+**STANDARD modules.** Per-channel models are stored only by modules that advertise persistent per-channel storage. On a module that does not, the component refuses loudly (a warning that `ct_models:` is not supported by this device, keys ignored) instead of writing a value that would silently revert after a power cycle — use the single `ct_model:` there.
+
+The same write guards as for `ct_model:` apply (equal values are not written; factory-paired modules refuse the change).
+
 **Mutually exclusive** with `ct_model:`.
+
+---
+
+### `ct_model_force`
+
+| Attribute | Value |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+| Required | No |
+
+Service option. Overrides the write guard: the component then applies the `ct_model:` / `ct_models:` preset even when the module is factory-paired or already holds the same value. This **replaces the module's individual calibration with the generic preset for that model**, so use it only deliberately, run it once and remove it.
+
+The schema rejects `ct_model_force: true` unless `ct_model:` or `ct_models:` is also present, so the flag cannot sit armed in YAML waiting for a later model line.
+
+```yaml
+rbamp:
+  ct_model: SCT_013_030
+  ct_model_force: true   # one-off; remove both lines after the operation
+```
+
+---
+
+### `start_current_ua`
+
+| Attribute | Value |
+|---|---|
+| Type | integer, microamps |
+| Allowed values | `0` (off) or `10`..`2540` in steps of `10` |
+| Default | None (the module's own default applies) |
+| Required | No |
+| Applies to | STANDARD modules with on-device energy counters; ignored with a warning elsewhere |
+
+Starting current for energy accounting. While a channel's current is below this value, the module counts no energy on that channel. Without it, at no load the measured power is noise of either sign and slowly creeps into both the import and the export counters. Instantaneous readings (current, power, ...) are **not** affected — only the energy counters.
+
+Values outside the allowed set (for example `15` or `3000`) are rejected by the schema, so an invalid value never reaches the bus. The setting is stored on the module and verified after the write; a value equal to the stored one is not rewritten.
+
+```yaml
+rbamp:
+  start_current_ua: 400
+```
+
+You can read the stored value back from a lambda with `id(meter1).read_start_current_ua()` (returns `65535` when unavailable).
 
 ---
 
@@ -249,15 +307,15 @@ On firmware v1.2+ each channel gets its own set of factory coefficients independ
 | Default | `false` |
 | Required | No |
 
-Enables the export-energy register read path for the STANDARD / PRO tiers. When `true`, the component attempts to read the per-channel export-power registers on each period snapshot and accumulate export Wh separately.
+Enables the per-channel export-energy path (`energy_exported`, `energy_exported_1`, `energy_exported_2`). When `true`, export energy is accumulated separately from import energy.
 
-**Status on the current firmware**: the key is accepted by the schema and reserves the `energy_export_wh[]` slots in NVS, but the export-energy register is not yet wired in firmware. The `energy_exported_*` sensors publish 0 until firmware that implements this register ships.
+On a **STANDARD** module the export energy is taken from the module's own counters, so it survives restarts and is monotonic. On a **BASIC** module the line is unidirectional: the `energy_exported_*` sensors are accepted by the schema but publish 0.
 
-Declare `energy_exported` (or `_1` / `_2`) under `sensor.platform: rbamp` only when `bidirectional: true` is set.
+Declare `energy_exported` (or `_1` / `_2`) under `sensor.platform: rbamp` only when `bidirectional: true` is set. The grand-total sensors `energy_exported_total` and `energy_net` do **not** need this key.
 
 ```yaml
 rbamp:
-  bidirectional: true   # meaningful on STANDARD / PRO
+  bidirectional: true   # needed for the per-channel energy_exported* sensors
 ```
 
 ---
@@ -275,16 +333,18 @@ Triggers a one-time I²C address change at boot. It must differ from `address` �
 On firmware **v1.3** a **two-phase commit** is used — production-OK without
 factory-provisioning gating. Compatibility behavior:
 
-| Capability bit | Behavior |
+| Firmware | Behavior |
 |---|---|
-| `CAP_TWO_PHASE_ADDR` (bit7) set | **Production path** — two-phase commit: staged write to `REG_I2C_ADDRESS` → magic `0xA5` to `REG_ADDR_COMMIT_MAGIC` → `CMD_COMMIT_ADDR` → re-enumeration. |
-| `CAP_TWO_PHASE_ADDR` not set (legacy v1.0-v1.2) | **Legacy fallback** — single-phase write, requires factory-provisioning mode. Logs `WARN_FACTORY_MODE_REQUIRED` if not in provisioning. |
+| Advertises two-phase address commit (v1.3+) | **Production path** — staged write, explicit confirmation, commit, re-enumeration. |
+| Does not advertise it (legacy v1.0-v1.2) | **Legacy fallback** — single-phase write, requires factory-provisioning mode. Logs `WARN_FACTORY_MODE_REQUIRED` if not in provisioning. |
+
+STANDARD modules support `new_address:` as well; the component applies it and re-binds to the new address the same way.
 
 The full flow runs once in `setup()`:
 
 1. Probe the current `address`. If the module does not respond there but does respond at `new_address`, the component adapts to the new address with a warning (assuming a previous boot already applied the change) and skips the write.
-2. Check the `CAP_TWO_PHASE_ADDR` capability bit. Set → production path (see below). Not set → legacy path with the provisioning-mode check.
-3. **Production path (v1.3)**: write `REG_I2C_ADDRESS` ← `new_address` (staged) → write `REG_ADDR_COMMIT_MAGIC` ← `0xA5` → write `CMD_COMMIT_ADDR` → wait ~700 ms → re-probe `new_address`. No factory-mode gating is required.
+2. Check whether the firmware advertises two-phase commit. Yes → production path (see below). No → legacy path with the provisioning-mode check.
+3. **Production path (v1.3)**: stage the new address, confirm, commit → wait ~700 ms → re-probe `new_address`. No factory-mode gating is required.
 4. **Legacy path (v1.0-v1.2)**: single-phase write, requires factory-provisioning mode on the module side.
 5. The component switches its internal I²C address via `i2c::I2CDevice::set_i2c_address()` to `new_address` and verifies that the module responds.
 6. If the module does not respond after the change, the component calls `mark_failed()` and stops.
@@ -293,7 +353,7 @@ The full flow runs once in `setup()`:
 
 > ⚠ **Factory-mode-only on legacy firmware (v1.0-v1.2)**.
 >
-> Standard production modules on legacy firmware shipped with provisioning mode disabled. Writing `new_address:` to such a module without factory mode will be rejected (warning `WARN_FACTORY_MODE_REQUIRED`). On v1.3 firmware this restriction is gone — the capability bit detects the production-OK path automatically.
+> Standard production modules on legacy firmware shipped with provisioning mode disabled. Writing `new_address:` to such a module without factory mode will be rejected (warning `WARN_FACTORY_MODE_REQUIRED`). On v1.3 firmware this restriction is gone — the component detects the production-OK path automatically.
 
 > ⚠ **Re-enumeration after commit**. After a successful commit the module resets and re-enumerates at the new address. Subsequent calls within the same `setup()` are directed to the new address transparently — but any other master on the bus (a raw I²C tool, a debug probe, another ESP32) still considers the module to be at the old address until it updates its own state.
 
@@ -316,19 +376,18 @@ Cross-reference: [the runtime address change reference](https://www.rbamp.com/do
 | Type | `bool` |
 | Default | `false` |
 | Required | No |
-| Capability gate | `CAP_GC_LATCH` (bit1 of `REG_CAPABILITY`) |
+| Applies to | BASIC modules with general-call latch support (v1.3+ firmware); ignored with a log line on STANDARD |
 
 Opt-in: enables receipt of the **General-Call latch broadcast** from the master. When
 the ESP32 emits a 5-byte GC frame to address `0x00`, all modules with `fleet_gc_enable:
 true` (and a matching `group_id:`) atomically latch their period accumulators
-at a single wire moment. This delivers **billing-grade synchronization** between
+at a single wire moment. This delivers **tight synchronization** between
 sub-meters.
 
-**Capability behavior**: at boot the component reads `REG_CAPABILITY` (0x57). If
-`CAP_GC_LATCH` (bit1) is not set → warning + skip without apply:
+**Capability behavior**: at boot the component checks whether the firmware advertises general-call latch. If it does not → warning + skip without apply:
 
 ```
-[W][rbamp:xxx]: fleet_gc_enable requested but CAP_GC_LATCH not in capability;
+[W][rbamp:xxx]: fleet_gc_enable requested but the module does not advertise general-call latch;
 firmware v1.0-v1.2 doesn't support General-Call. Falling back to sequential
 latch (~270 µs × N inter-module skew at 50 kHz).
 ```
@@ -359,6 +418,7 @@ Cross-reference: [the Fleet Group-Commit reference](https://www.rbamp.com/docs/m
 | Type | `uint8_t` (0..255) |
 | Default | `0` |
 | Required | No |
+| Applies to | BASIC modules; ignored with a log line on STANDARD |
 
 A cluster identifier for **selective** GC latch. The module accepts a GC frame
 only if the group field in the frame matches this `group_id` **OR** equals
@@ -419,26 +479,12 @@ Cross-reference: [the Fleet Group-Commit reference](https://www.rbamp.com/docs/m
 | Default | `SINGLE` |
 | Required | No |
 
-Declares the physical configuration of the module.
-
-| Value | Current firmware | When it becomes authoritative |
-|---|---|---|
-| `SINGLE` | Cosmetic (logged in `dump_config`). The channel count is derived from the declared `current[_1/_2]` slots. | Already matches every current SKU; will be confirmed from an in-band register once that ships in firmware. |
-| `SPLIT_PHASE` | Accepted by the schema, written to `dump_config`. Phased keys (`voltage_a/b/c`, `current_a/b/c`, …) may be declared in `sensor.platform: rbamp` — the component then reserves the slots, but there is nothing to publish into them yet. | After the rbAmp-U2I2 SKU ships with an in-band topology register. |
-| `THREE_PHASE` | Same as `SPLIT_PHASE`. | After the rbAmp-U3I3 SKU ships with an in-band topology register. |
-
-On the current firmware there is no in-band topology register (reserved for future revisions). The hint is informational: it goes into the `dump_config` line, but the actual channel count is derived independently from the declared `current[_1/_2]` sensor slots.
+Optional hint, kept for backward compatibility. **It is not needed on STANDARD modules**: the component reads the channel count, variant and capabilities from the module itself and sizes the entity set from that. On BASIC modules the channel count is derived from the `current[_1/_2]` slots you declare, and `topology:` only changes the line printed by `dump_config`.
 
 ```yaml
 rbamp:
-  topology: SINGLE         # UI1, UI2, UI3, I1, I2, I3 — current SKUs
-  # topology: SPLIT_PHASE  # US split-phase (U2I2) — future SKU
-  # topology: THREE_PHASE  # European 3-phase (U3I3) — future SKU
+  topology: SINGLE         # cosmetic; may be omitted
 ```
-
-Once the module starts publishing topology via its register, the component will prefer the value from the module and use the YAML hint only as a fallback. The `SINGLE` default matches every current SKU — no changes to deployed configs will be needed.
-
-Cross-reference: [the `topology` reference](https://www.rbamp.com/docs/modules-basic-standard-api-reference).
 
 ---
 
@@ -464,7 +510,7 @@ sensor:
       name: "Mains Power Factor"
 ```
 
-All fields under the `sensor:` block are optional. Declare only the quantities your scenario needs — the component reads only the registers that correspond to the declared sensors.
+All fields under the `sensor:` block are optional, with one rule: `power`, `energy`, `power_factor`, `reactive_power` and `apparent_power` need `voltage` AND `current` declared in the same block (the numbered channel sensors `power_N`, `energy_N`, `power_factor_N`, `reactive_power_N` need `current_N` and `voltage`); otherwise `esphome config` fails with "`power` requires `current` to also be declared". Add `internal: true` to a required sensor you do not want as a Home Assistant entity. Declare only the quantities your scenario needs — the component reads only the registers that correspond to the declared sensors.
 
 ### `rbamp_id`
 
@@ -479,7 +525,9 @@ References the `rbamp:` block this sensor group is bound to.
 
 ### 2.1 Single fields
 
-Used for the current SKUs (UI1, UI2, UI3, I1, I2, I3). All fields are optional. Mixing them with phased fields (`voltage_a`, etc.) raises a validation error.
+Used for single-voltage modules (UI1, UI2, UI3, I1, I2, I3 and higher-channel variants). All fields are optional. Mixing them with phased fields (`voltage_a`, `voltage_angle_b`, etc.) raises a validation error.
+
+Slots exist for up to seven current channels: `current` and `current_1` ... `current_6`, and likewise `power`, `energy` and `power_factor` with the same suffixes (`power_3`, `energy_5`, ...). `energy_exported` exists for channels 0..2 (`energy_exported`, `energy_exported_1`, `energy_exported_2`). A slot beyond the channel count the module reports never publishes. `reactive_power` exists for channels 0..2 only (`reactive_power`, `reactive_power_1`, `reactive_power_2`); `reactive_power_3` ... `reactive_power_6` are accepted by the schema but never publish.
 
 Each field accepts the standard ESPHome `sensor.sensor_schema` subkeys: `name`, `id`, `filters`, `unit_of_measurement`, `accuracy_decimals`, `icon`, and so on.
 
@@ -506,7 +554,7 @@ voltage:
         send_every: 1
 ```
 
-#### `current` / `current_1` / `current_2`
+#### `current` / `current_1` ... `current_6`
 
 | Attribute | Value |
 |---|---|
@@ -515,9 +563,9 @@ voltage:
 | `state_class` | `measurement` |
 | `accuracy_decimals` | 3 |
 
-RMS current for channels 0, 1, 2 respectively. Channel 0 is the main CT clamp; channels 1 and 2 are present on the UI2 / UI3 and I2 / I3 SKUs.
+RMS current for channels 0, 1, 2, ... Channel 0 is the main CT clamp; channels 1 and 2 are present on the UI2 / UI3 and I2 / I3 variants, channels 3..6 on higher-channel variants.
 
-The active channel count is derived from the number of declared slots: if only `current` is declared, `n_channels_ = 1`; with `current` and `current_1`, `2`; adding `current_2` gives `3`.
+On a BASIC module the active channel count is derived from the number of declared slots: if only `current` is declared, the component uses 1 channel; with `current` and `current_1`, 2; adding `current_2` gives 3. On a STANDARD module the channel count comes from the module itself; declared slots beyond it simply never publish.
 
 ```yaml
 current:
@@ -528,7 +576,7 @@ current_2:
   name: "Load 2 Current"
 ```
 
-#### `power` / `power_1` / `power_2`
+#### `power` / `power_1` ... `power_6`
 
 | Attribute | Value |
 |---|---|
@@ -536,9 +584,9 @@ current_2:
 | `device_class` | `power` |
 | `state_class` | `measurement` |
 | `accuracy_decimals` | 1 |
-| Dependencies | `power` requires `current` + `voltage`; `power_1` requires `current_1` + `voltage`; `power_2` requires `current_2` + `voltage` |
+| Dependencies | `power` requires `current` + `voltage`; `power_N` requires `current_N` + `voltage` |
 
-Active power in watts, **signed**. Negative values = reverse flow (generation into the grid) on the STANDARD / PRO tiers. On BASIC, negative instantaneous values within the period window are clamped to 0 at the firmware level — the period average is `≥ 0`. The instantaneous active power can still read negative at the moment of generation.
+Active power in watts, **signed**. Negative values = reverse flow (generation into the grid) on STANDARD modules. On BASIC, negative instantaneous values within the period window are clamped to 0 at the firmware level — the period average is `≥ 0`. The instantaneous active power can still read negative at the moment of generation.
 
 Declaring `power` without `current` + `voltage` raises a validation error:
 `power requires current to also be declared`.
@@ -548,7 +596,7 @@ power:
   name: "Active Power"
 ```
 
-#### `energy` / `energy_1` / `energy_2`
+#### `energy` / `energy_1` ... `energy_6`
 
 | Attribute | Value |
 |---|---|
@@ -556,20 +604,20 @@ power:
 | `device_class` | `energy` |
 | `state_class` | `total_increasing` |
 | `accuracy_decimals` | 3 |
-| Source | Master-side accumulator (not a module register) |
-| Dependencies | Requires `current` + `voltage` |
+| Dependencies | `energy` requires `current` + `voltage`; `energy_N` requires `current_N` + `voltage` |
 
-Accumulated consumed energy in Wh. Computed entirely on the ESP32 from the formula:
+Accumulated consumed (import) energy in Wh for the channel.
+
+- **STANDARD modules** — the component accumulates the module's own energy counters. Totals survive restarts of both the ESP32 and the module and are monotonic (they do not step back when the module restarts or a counter is reset).
+- **BASIC modules** — computed on the ESP32 from the period-average power returned by the module after each latch:
 
 ```
 E_Wh[ch] += avg_P_W[ch] * master_dt_s / 3600
 ```
 
-where `avg_P_W[ch]` is the period-average power read from the module after each latch command, and `master_dt_s` is the ESP32 wall-clock interval between latches.
+In both cases the value is saved to the ESP32 flash (NVS) every 5 minutes and on a clean shutdown (reboot / OTA), and restored before the first `publish_state` at boot — this keeps the HA Energy dashboard from interpreting an instantaneous 0 as a counter reset. On BASIC, a sudden power failure loses at most the last 5 minutes of energy (≈ 5 Wh at an average of 60 W). When the NVS layout changes (a version bump), the counter starts from 0.
 
-The values are saved to NVS every 5 minutes and restored before the first `publish_state` at boot — this keeps the HA Energy dashboard from interpreting an instantaneous 0 as a counter reset. The worst-case loss on a sudden power failure is up to 5 minutes of energy (≈ 5 Wh at an average of 60 W).
-
-`state_class: total_increasing` is required for the HA Energy dashboard. The value rises monotonically; it does not decrease under normal operation. When the NVS layout changes (a version bump), the counter starts from 0.
+`state_class: total_increasing` is required for the HA Energy dashboard. The value rises monotonically; it does not decrease under normal operation.
 
 ```yaml
 energy:
@@ -584,12 +632,11 @@ energy:
 | `device_class` | `energy` |
 | `state_class` | `total_increasing` |
 | `accuracy_decimals` | 3 |
-| Source | Master-side export accumulator |
 | Dependencies | Requires `current` + `voltage` + `bidirectional: true` |
 
-Export (generation) energy in Wh, accumulated separately from `energy`. Wired in the component but publishes 0 until firmware adds the corresponding period-negative-power register. Set `bidirectional: true` in the `rbamp:` block when declaring these sensors.
+Export (generation) energy in Wh for channels 0..2, accumulated separately from `energy`. Set `bidirectional: true` in the `rbamp:` block when declaring these sensors. On STANDARD modules the values come from the module's counters (persistent, monotonic). On BASIC modules the sensors are accepted but publish 0.
 
-#### `power_factor` / `power_factor_1` / `power_factor_2`
+#### `power_factor` / `power_factor_1` ... `power_factor_6`
 
 | Attribute | Value |
 |---|---|
@@ -616,7 +663,7 @@ power_factor:
 | `accuracy_decimals` | 1 |
 | Dependencies | Requires `current` + `voltage` for the corresponding slot |
 
-Reactive power in VAr. Signed. Published from the instantaneous-register block on every `update()` cycle.
+Reactive power in var. Unsigned (≥ 0), computed as √(S² − P²), includes distortion; no accuracy stated. Inductive and capacitive loads are not distinguished. Read from the module on every `update()` cycle; published for channels 0..2 only (`reactive_power_3` ... `reactive_power_6` are accepted by the schema but never publish). No accuracy is stated for reactive power.
 
 ```yaml
 reactive_power:
@@ -657,9 +704,9 @@ apparent_power:
 
 ---
 
-### 2.2 Phased fields (future SKUs)
+### 2.2 Phased fields (multi-voltage variants)
 
-Reserved for the split-phase (U2I2, US market) and three-phase (U3I3) future SKUs. The schema accepts them now — a user can prepare the configuration ahead of time. On the current firmware, declaring phased slots reads the corresponding register addresses (which return `0.0` for unimplemented channels) and publishes 0 — not an error, but not useful data either.
+For modules with more than one voltage input (split-phase and three-phase variants) the sensors are declared per phase. The schema accepts the phased group on any module; a slot publishes only when the connected module actually reports the corresponding channel, otherwise it stays without a value.
 
 Single and phased fields are **mutually exclusive** within one `sensor:` block. The validator raises an error:
 
@@ -680,16 +727,18 @@ All phased fields share the same `sensor_schema` defaults as their single-phase 
 | `energy_exported_a` / `_b` / `_c` | Wh | energy |
 | `power_factor_a` / `_b` / `_c` | — | power_factor |
 | `reactive_power_a` / `_b` / `_c` | VAr | reactive_power |
+| `voltage_angle_b` / `_c` | ° | — |
 
-> Per-phase dependency validation is not enforced for phased fields (only `_SINGLE_SLOT_DEPS` for single-phase). Firmware support for the split / three-phase variants is reserved for future SKUs.
+`voltage_angle_b` and `voltage_angle_c` publish the phase angle of the B and C voltages in degrees, relative to phase A (phase A is the 0° reference, so there is no `voltage_angle_a`). They need a module firmware that provides the angles; on older firmware the component logs a warning at boot and the sensors never publish. While the angle cannot be determined the value is "unknown".
 
-Example for a future three-phase deployment:
+> Per-phase dependency validation is not enforced for phased fields (only `_SINGLE_SLOT_DEPS` for single-phase).
+
+Example:
 
 ```yaml
 rbamp:
   id: panel_meter
   address: 0x50
-  topology: THREE_PHASE
 
 sensor:
   - platform: rbamp
@@ -708,13 +757,17 @@ sensor:
       name: "Phase C Current"
     power_total:
       name: "Total Active Power"
+    voltage_angle_b:
+      name: "Phase B Angle"
+    voltage_angle_c:
+      name: "Phase C Angle"
 ```
 
 ---
 
 ### 2.3 Shared fields (topology-independent)
 
-Two fields work in any topology group, including the case where no single-phase or phased current sensor is declared at all (a voltage-only or frequency-only deployment).
+These fields work in any topology group, including the case where no single-phase or phased current sensor is declared at all (a voltage-only or frequency-only deployment).
 
 #### `frequency`
 
@@ -724,18 +777,60 @@ Two fields work in any topology group, including the case where no single-phase 
 | `device_class` | `frequency` |
 | `state_class` | `measurement` |
 | `accuracy_decimals` | 0 |
-| Type | `uint8_t` (not float) |
 
-Mains frequency, read as a single byte. The component publishes the value only if it equals 50 or 60 — other values (`0` = ZC not caught, or implausibly large) are discarded without publishing. This avoids the "Unknown" → 0 Hz → 50 Hz transition in the HA entity during warm-up.
+Mains frequency. Implausible values (module reports "not measured yet") are discarded without publishing, which avoids an "Unknown" → 0 Hz → 50 Hz transition in the HA entity during warm-up.
 
 ```yaml
 frequency:
   name: "Mains Frequency"
 ```
 
-#### `apparent_power` (shared)
+#### `apparent_power`
 
-See the identical entry under the single fields above. `apparent_power` is in `SHARED_FIELDS` and can appear in a single-phase or phased sensor block, provided that `voltage` and `current` (or `current_a`) are also declared.
+See the entry under the single fields above. `apparent_power` requires `current` and `voltage`, so it belongs in a single-phase sensor block.
+
+#### `energy_total` / `energy_exported_total` / `energy_net`
+
+| Sensor | Unit | `state_class` | Meaning |
+|---|---|---|---|
+| `energy_total` | Wh | `total_increasing` | Imported energy, all channels of the module |
+| `energy_exported_total` | Wh | `total_increasing` | Exported energy, all channels of the module |
+| `energy_net` | Wh | `total` | Import minus export. **May decrease.** |
+
+Grand totals over **all** channels of the module, taken from the module's own energy counters (STANDARD modules). They survive restarts of the ESP32 and of the module, are monotonic across module restarts and counter resets (except `energy_net`, which is the difference of two monotonic values), and are also saved to NVS every 5 minutes and on a clean shutdown. They need no `bidirectional:` key and no companion `current`/`voltage` declaration.
+
+On a module without on-device energy counters (BASIC) these keys validate but never publish; the component logs a warning at boot. Use the per-channel `energy` sensors there.
+
+```yaml
+sensor:
+  - platform: rbamp
+    rbamp_id: meter1
+    energy_total:
+      name: "Energy Imported"
+    energy_exported_total:
+      name: "Energy Exported"
+    energy_net:
+      name: "Energy Net"
+```
+
+#### `reactive_energy` / `reactive_energy_exported`
+
+| Attribute | Value |
+|---|---|
+| Unit | varh |
+| `state_class` | `total_increasing` |
+| `accuracy_decimals` | 3 |
+
+Reactive energy (import / export) over all channels, from the same on-device counters and with the same persistence as `energy_total`. STANDARD modules only; on others the keys validate but never publish.
+
+#### `phase_sequence`
+
+| Attribute | Value |
+|---|---|
+| Unit | — |
+| `accuracy_decimals` | 0 |
+
+Phase rotation of a three-voltage module: `1` = forward, `2` = reverse, `3` = abnormal. "Unknown" while it cannot be determined (fewer than three live voltage inputs). Needs a module firmware that provides it; otherwise the component logs a warning at boot and the sensor never publishes. In a lambda, `id(meter1).get_phase_sequence_str()` returns `"forward"`, `"reverse"`, `"abnormal"`, `"n/a"` or `"unavailable"`.
 
 ---
 
@@ -753,17 +848,21 @@ phased fields (voltage_a/b/c, current_a/b/c, ...). Pick one group based
 on your rbAmp SKU.
 ```
 
+The phased group includes `voltage_angle_b` / `voltage_angle_c`.
+
 #### Per-slot companion requirements (single-phase only)
 
 Each derived field requires the input fields the module needs to compute it:
 
 | Declared field | Required companions |
 |---|---|
-| `power` / `_1` / `_2` | `current` (or `_1` / `_2`) + `voltage` |
-| `energy` / `_1` / `_2` | `current` (or `_1` / `_2`) + `voltage` |
-| `power_factor` / `_1` / `_2` | `current` (or `_1` / `_2`) + `voltage` |
-| `reactive_power` / `_1` / `_2` | `current` (or `_1` / `_2`) + `voltage` |
+| `power` / `_1` ... `_6` | `current` (or `_1` ... `_6`, same suffix) + `voltage` |
+| `energy` / `_1` ... `_6` | `current` (or `_1` ... `_6`, same suffix) + `voltage` |
+| `power_factor` / `_1` ... `_6` | `current` (or `_1` ... `_6`, same suffix) + `voltage` |
+| `reactive_power` / `_1` / `_2` | `current` (or `_1` ... `_6`, same suffix) + `voltage` |
 | `apparent_power` | `current` + `voltage` |
+
+`energy_exported*`, `energy_total`, `energy_exported_total`, `energy_net`, `reactive_energy*` and `phase_sequence` have no schema companion requirements.
 
 A missing companion raises:
 
@@ -779,6 +878,13 @@ cannot compute it without that input.
 | `ct_model:` ↔ `ct_models:` mutually exclusive | Only one of the two may be used per `rbamp:` block — otherwise a validation error. |
 | `new_address` ≠ `address` | If they match — `cv.Invalid`. |
 | `address` in the range `0x08..0x77` | `cv.i2c_address` is applied. |
+| `update_interval` ≥ `1s` | Shorter intervals are rejected. |
+| `latch_interval` ≥ `update_interval` | A shorter latch cadence is rejected. |
+| `ct_models:` has 1..16 entries | Longer lists are rejected. |
+| `group_id` is 0..255 | Out-of-range values are rejected. |
+| `start_current_ua` is `0` or `10`..`2540` in steps of `10` | Any other value is rejected. |
+| `ct_model_force: true` requires `ct_model:` or `ct_models:` | Rejected on its own. |
+| CT model code valid for the pinned `sensor_class` | A code not allowed for the class is rejected with the list of allowed values. |
 
 All validation errors are reported during `esphome compile` with a human-readable message pointing at the offending key. There is no need to flash hardware to find a configuration error.
 
@@ -816,11 +922,13 @@ opens a new one                       ↓ (main loop keeps running)
                                     Push state to HA over the native API
 ```
 
+> The diagram shows the BASIC latch-based flow. A STANDARD module keeps its own energy counters: on each `update()` the component reads the instantaneous values and the counter snapshot (one coherent transaction) and adds the difference to its running totals, so the latch step is not used for energy.
+
 **Characteristic timings**:
 
 | Event | Cadence |
 |---|---|
-| Internal commit of the instantaneous block by the module | ~200 ms |
+| Internal commit of the instantaneous block by the module | ~100 ms |
 | `update()` call | `update_interval` (60 s by default) |
 | Settle timeout after the latch command | 50 ms (non-blocking) |
 | Save to NVS | Every 5 minutes |
@@ -833,7 +941,7 @@ The warning `[W][component:522]: rbamp took a long time for an operation (XXX ms
 
 ---
 
-## 4. I²C bus settings
+## 4. I2C bus settings
 
 The `rbamp` component inherits the I²C bus configured in the top-level `i2c:` block. Recommended settings on the current firmware:
 
@@ -845,7 +953,7 @@ i2c:
   scan: true         # optional: logs the addresses found at boot
 ```
 
-**Bus speed**: use `50kHz` on ESP-IDF-based masters (ESP32 with ESPHome or Arduino). The module periodically NACKs at 100 kHz (~20% of transactions) due to a known interaction with the ESP-IDF `i2c_master` driver (confirmed in [esp-idf issue #9426](https://github.com/espressif/esp-idf/issues/9426), marked "Won't Do" by Espressif). Firmware v1.1/v1.3 hardened the module side, but the driver interaction persists — 50 kHz is the standing recommendation. The component's three-layer mitigation (retry + sanity + 50 kHz) drops the effective bad-read rate below 1%.
+**Bus speed**: use `50kHz` on ESP-IDF-based masters (ESP32 with ESPHome or Arduino). The module periodically NACKs at 100 kHz (a noticeable share of transactions) due to a known interaction with the ESP-IDF `i2c_master` driver (confirmed in [esp-idf issue #9426](https://github.com/espressif/esp-idf/issues/9426), marked "Won't Do" by Espressif). Firmware v1.1/v1.3 hardened the module side, but the driver interaction persists — 50 kHz is the standing recommendation. The component's three-layer mitigation (retry + sanity + 50 kHz) drops the effective bad-read rate below 1%.
 
 **Pull-up resistors**: 4.7 kΩ to 3.3 V on SDA and SCL is recommended. Larger values (10 kΩ) increase the rise time and raise the NACK rate at 100 kHz.
 
@@ -865,13 +973,16 @@ cached state.
 | Method | Return type | Source | Description |
 |---|---|---|---|
 | `get_variant_str()` | `std::string` | `REG_HW_VARIANT` (0x55) | "UI1"/"UI2"/"UI3"/"I1"/"I2"/"I3"/"UNK" — the module's variant |
-| `get_capability_hex()` | `std::string` | `REG_CAPABILITY` (0x57) | "0xNNNN" — the full 16-bit capability bitmap |
+| `get_capability_hex()` | `std::string` | capability register | "0xNNNN" — the 16-bit capability bitmap, for diagnostics |
 | `get_uid_hex()` | `std::string` | `REG_UID` (0x5C × 12 bytes) | 24-char hex (96-bit chip UID) |
 | `get_last_error_str()` | `std::string` | `REG_ERROR` (0x02) | "OK"/"ERR_PARAM"/"ERR_BUSY"/"ERR_LATCH"/"ERR_CRC" |
-| `get_event_flags()` | `uint16_t` | `REG_EVENT_FLAGS` (0x03) | sticky bits: bit3=ERR_LATCH, bit5=ADDR_CHANGED, etc. |
-| `get_firmware_version()` | `std::string` | `REG_VERSION` (0x01) | "1.3" / "1.2" / "1.0" |
+| `get_event_flags()` | `uint8_t` | `REG_EVENT_FLAGS` (0x03) | sticky bits: bit3=ERR_LATCH, bit5=ADDR_CHANGED, etc. |
+| `get_firmware_version()` | `uint8_t` | `REG_VERSION` (0x01) | the module's version byte (e.g. `0x04` on v1.3 BASIC firmware) |
+| `get_std_image_version()` | `uint32_t` | STANDARD only | Running module image version; `0` = unknown or BASIC |
+| `get_phase_sequence_str()` | `std::string` | STANDARD only | "forward"/"reverse"/"abnormal"/"n/a"/"unavailable" |
+| `read_start_current_ua()` | `uint16_t` | STANDARD only | Fresh read of the stored starting current in µA; `65535` = unavailable |
 | `read_gc_tick_received()` | `uint16_t` | `REG_GC_LAST_TICK` (0x58) | last latched tick value from the GC frame |
-| `is_capability_supported(bit)` | `bool` | cached `REG_CAPABILITY` | helper for capability-gated code |
+| `get_capability_cached()` | `uint16_t` | cached capability bitmap | the bitmap read at boot, without a bus transaction |
 
 **Caching**: `variant` / `capability` / `uid` / `firmware_version` are read
 **once in `setup()`** and cached — repeat calls do not go to the bus.
@@ -892,7 +1003,7 @@ text_sensor:
     name: "Mains capability"
     update_interval: 30s
     lambda: 'return id(mains_meter).get_capability_hex();'
-    # → "0x0718" = CAP_GC_LATCH | CAP_TWO_PHASE_ADDR | CAP_SAVE_USER_CONFIG | CAP_CLEAR_ERROR
+    # → the capability bitmap as hex, "0xNNNN" (diagnostics only)
 
   - platform: template
     name: "Mains UID"
@@ -907,7 +1018,7 @@ text_sensor:
   - platform: template
     name: "Mains firmware version"
     update_interval: 30s
-    lambda: 'return id(mains_meter).get_firmware_version();'
+    lambda: 'char b[8]; snprintf(b, sizeof(b), "0x%02X", id(mains_meter).get_firmware_version()); return std::string(b);'
 ```
 
 These text_sensors appear in HA as `sensor.mains_variant` and so on — handy
@@ -921,31 +1032,25 @@ sensor:
     rbamp_id: mains
     energy: { name: "Mains Energy" }
 
-# In an automation: skip publishing if the module is on legacy firmware
-automation:
-  - trigger:
-      platform: state
-      entity_id: sensor.mains_energy
-    condition:
-      - condition: lambda
-        return: 'return id(mains).is_capability_supported(0x0001);'  # CAP_HONEST_BOOT
+# Read the stored values from a lambda (e.g. in an on_boot automation)
+esphome:
+  on_boot:
     then:
-      - service: persistent_notification.create
-        data:
-          message: "Mains energy published (firmware capability check passed)"
+      - lambda: |-
+          ESP_LOGI("meter", "variant=%s", id(mains).get_variant_str().c_str());
 ```
 
 ---
 
 ## 6. Fleet & GC sync (v1.3 NEW)
 
-### `transmit_gc_frame(group, tick)` — programmatic GC emit
+### `transmit_gc_frame()` — programmatic GC emit
 
 ```cpp
-void transmit_gc_frame(uint8_t group, uint16_t tick);
+bool transmit_gc_frame();
 ```
 
-Emits a 5-byte General-Call latch frame to bus address `0x00`:
+Emits a 5-byte General-Call latch frame to bus address `0x00`. The group byte is the instance's `group_id:` and the tick is an auto-incrementing counter; the method returns `true` when the bus write succeeded. BASIC modules only — on a STANDARD module it logs a warning and does nothing:
 
 ```text
 START | 0x00 | A | 0xA5 | A | 0x27 | A | group | A | tick_lo | A | tick_hi | A | STOP
@@ -953,41 +1058,26 @@ START | 0x00 | A | 0xA5 | A | 0x27 | A | group | A | tick_lo | A | tick_hi | A |
 
 All modules with `fleet_gc_enable: true` + a matching `group_id:` (or `group_id: 0`)
 latch their period accumulators **synchronously** at a single wire moment. The tick
-value is written to each module's `REG_GC_LAST_TICK` for check_sync verification.
+value is stored by each module for sync verification (`read_gc_tick_received()`).
 
 **Auto-emit**: the component emits a GC frame **automatically** in `update()` if
-`fleet_gc_enable: true` and the `CAP_GC_LATCH` capability is set. A manual emit is needed
+`fleet_gc_enable: true` and the firmware advertises general-call latch. A manual emit is needed
 only for extra synchronization (for example, on an HA-side event trigger).
 
-**Capability check**: if `CAP_GC_LATCH` is not set — vendor warning, no emit.
+**Capability check**: if the firmware does not advertise general-call latch — warning, no emit.
 
 ### `fleet_apply_now()` — force re-apply read-compare-write
 
 ```cpp
-void fleet_apply_now();
+bool fleet_apply_now();
 ```
 
-Forcibly repeats the read-compare-write boot-writeback procedure:
-re-reads `REG_SENSOR_CLASS`, `REG_CT_MODEL_CH0/1/2`, `REG_FLEET_CONFIG`,
-`REG_GROUP_ID`, compares them with what the YAML requested, writes the delta + verifies.
+Forcibly repeats the read-compare-write for the fleet settings: re-reads the module's
+fleet configuration and group id, compares them with `fleet_gc_enable:` / `group_id:` from the YAML and
+writes the difference. Returns `false` (and does nothing) on a STANDARD module.
 
-Use case: after a `factoryReset()` via a debug tool, or for post-OTA
-verification that the config applied.
-
-### Bench-validated synchronization
-
-On the Fix-A fleet UI1@0x50 + I2@0x51 + I3@0x52 (2026-06-16):
-
-```
-GC emit tick=42, group=1 → 3 modules ACK
-check_sync(tick=42) → SYNC: t0x50=42 t0x51=42 t0x52=42 (3/3 in_sync)
-```
-
-**Validated bench output**:
-
-- L8 soak 180 cycles, 0 sync drops
-- GC sync 3/3 every round under a 0.58 A load
-- L9 energy rel_err = 0.0000% (master wall-clock canon)
+Use case: after a module was reset to defaults with a debug tool, or for post-OTA
+verification that the fleet config applied.
 
 ---
 
@@ -1016,9 +1106,9 @@ api:
     # Fleet: manual GC latch (beyond the auto-emit in update())
     - service: fleet_latch_now
       then:
-        - lambda: 'id(mains).transmit_gc_frame(1, 0);'   # group=1, tick=auto-increment
+        - lambda: 'id(mains).transmit_gc_frame();'   # group = this instance's group_id, tick auto-increments
 
-    # Maintenance: force config re-apply (post-OTA verify)
+    # Maintenance: force fleet-config re-apply (post-OTA verify)
     - service: mains_fleet_apply
       then:
         - lambda: 'id(mains).fleet_apply_now();'
@@ -1054,7 +1144,7 @@ In v1.3 the module has **two independent error channels**:
 | Channel | Register | Latch semantics | Clearing |
 |---|---|---|---|
 | **Sync (last-write)** | `REG_ERROR` (0x02) | last-write wins, overwritten by the next operation | `write_clear_error()` or the next successful operation |
-| **Async durable** | `REG_EVENT_FLAGS` bit3 (0x03) | sticky, re-latches ~200-300 ms if the root cause is not resolved | `write_clear_error()` (one operation clears both) |
+| **Async durable** | `REG_EVENT_FLAGS` bit3 (0x03) | sticky, re-latches a few hundred milliseconds if the root cause is not resolved | `write_clear_error()` (one operation clears both) |
 
 ### Read pattern
 

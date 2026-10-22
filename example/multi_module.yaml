@@ -1,16 +1,11 @@
-# Three rbAmp modules on one I2C bus, broadcast LATCH for synchronized
-# snapshots.
+# Three rbAmp modules on one I2C bus, with a shared General-Call latch for
+# synchronized period snapshots.
 #
-# STATUS: works on v1 firmware via per-device sequential LATCH fallback.
-# True broadcast (single I2C general-call write to 0x00) is reserved for v1.1
-# firmware — v1 has GeneralCallMode = DISABLE in the slave I2C peripheral and
-# silently drops writes to 0x00 (see libs/spec/SPEC.md §9). The component
-# detects this at boot, logs an ESP_LOGW warning, and falls back to per-device
-# sequential LATCH each cycle. Skew is bounded by I2C transaction time × N
-# modules — ~270 µs × 3 = ~810 µs at 100 kHz, < 0.0015 % of the 60 s period.
-# Acceptable for energy metering. Leave `broadcast_latch: true` in place when
-# upgrading to v1.1 — the warning disappears automatically and the master
-# switches to single broadcast writes once REG_VERSION reports >= 0x02.
+# `fleet_gc_enable: true` makes the component send one General-Call frame that
+# all modules sharing the same `group_id` latch at the same wire moment. This
+# needs a module firmware that supports General-Call latch; on older firmware
+# the component logs a warning and latches each module in turn (skew bounded
+# by the I2C transaction time x N modules).
 #
 # Bus topology:
 #   ESP32 GPIO21 (SDA) ─┬── rbAmp #1 @ 0x50
@@ -54,24 +49,25 @@ external_components:
     components: [rbamp]
 
 # Each module has its own `rbamp:` block (MULTI_CONF=True in the component
-# schema). Setting `broadcast_latch: true` on ALL of them is what enables
-# the synchronized snapshot — only the first to fire will actually broadcast
-# in any given polling cycle, but all three will see the same chip-side
-# period boundary.
+# schema). Set `fleet_gc_enable: true` and the same `group_id` on all of them
+# to get the synchronized snapshot.
 rbamp:
   - id: meter_house
     address: 0x50
     update_interval: 60s
-    broadcast_latch: true
+    fleet_gc_enable: true
+    group_id: 1
   - id: meter_solar
     address: 0x51
     update_interval: 60s
-    broadcast_latch: true
+    fleet_gc_enable: true
+    group_id: 1
     bidirectional: true   # solar export — but see "Known limitations" in README
   - id: meter_evcharger
     address: 0x52
     update_interval: 60s
-    broadcast_latch: true
+    fleet_gc_enable: true
+    group_id: 1
 
 sensor:
   - platform: rbamp

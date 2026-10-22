@@ -6,16 +6,17 @@ Cross-references:
 
 - YAML schema: [`09_api_reference.md`](09_api_reference.md)
 - HA specifics: [`08_has_integrations.md`](08_has_integrations.md)
-- Arduino client library: [`rbamp-arduino`](https://github.com/rbamp/rbamp-arduino)
-- ESP-IDF client library: [`rbamp-esp-idf`](https://github.com/rbamp/rbamp-esp-idf)
-- Python (CPython + MicroPython): [`rbamp-python`](https://github.com/rbamp/rbamp-python)
-- STM32 HAL: [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in factoryment)*
+- Arduino client library: [`rbamp-arduino`](https://github.com/rb-amp/rbamp-arduino)
+- ESP-IDF client library: [`rbamp-esp-idf`](https://github.com/rb-amp/rbamp-esp-idf)
+- Python (CPython + MicroPython): [`rbamp-python`](https://github.com/rb-amp/rbamp-python)
 
 ---
 
 ## 1 · InfluxDB and Grafana via Home Assistant
 
 The simplest path to InfluxDB + Grafana requires no YAML changes. Home Assistant exports all entity states to InfluxDB through its native integration:
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 # configuration.yaml in HA
@@ -155,6 +156,8 @@ Any MQTT subscriber — Node-RED, InfluxDB Telegraf, OpenHAB, a custom Python sc
 
 Add `retain: true` to each sensor if subscribers that connect after a publication must immediately see the last value:
 
+*Assumes you already have an `mqtt:` block in the node YAML.*
+
 ```yaml
 sensor:
   - platform: rbamp
@@ -214,6 +217,8 @@ The ESPHome `on_value` callback fires on every new sensor reading. You can use i
 
 ### Current threshold alarm
 
+*Assumes you already have a `switch:` entry with the id used below.*
+
 ```yaml
 sensor:
   - platform: rbamp
@@ -245,6 +250,12 @@ globals:
 sensor:
   - platform: rbamp
     rbamp_id: meter1
+    voltage:                  # power needs voltage AND current in the same block
+      name: "Mains Voltage"
+      internal: true
+    current:
+      name: "Mains Current"
+      internal: true
     power:
       name: "Mains Power"
       on_value:
@@ -259,10 +270,18 @@ sensor:
 
 ### Publishing to a custom MQTT topic on a threshold
 
+*Assumes you already have an `mqtt:` block in the node YAML.*
+
 ```yaml
 sensor:
   - platform: rbamp
     rbamp_id: meter1
+    voltage:                  # power needs voltage AND current in the same block
+      name: "Mains Voltage"
+      internal: true
+    current:
+      name: "Mains Current"
+      internal: true
     power:
       name: "Mains Power"
       on_value:
@@ -309,9 +328,11 @@ rbamp:
 sensor:
   - platform: rbamp
     rbamp_id: meter_grid
+    voltage: { name: "Grid Voltage", internal: true }   # power needs voltage AND current
+    current: { name: "Grid Current", internal: true }
     power:
       name: "Grid Power"
-      # Positive = import, negative = export (STANDARD/PRO tiers with correct wiring)
+      # Positive = import, negative = export (STANDARD (STD) with correct wiring)
       on_value:
         - lambda: |-
             // If grid power is negative, that is export (solar surplus).
@@ -339,7 +360,7 @@ interval:
           id(heater_pwm).set_level(duty);
 ```
 
-> **Note**: bidirectional power (negative values = export) requires a STANDARD or PRO tier with correct voltage-polarity wiring. On BASIC, the firmware clamps the **average** active power over the period to `P ≥ 0` — instantaneous P still reads negative at the moment of generation, but the export period accumulator stays empty. Per-tier behavior is in [`02_tiers.md`](02_tiers.md), polarity wiring is in [`04_hardware.md`](04_hardware.md).
+> **Note**: bidirectional power (negative values = export) requires a STANDARD (STD) module with correct voltage-polarity wiring. On BASIC, the firmware clamps the **average** active power over the period to `P ≥ 0` — instantaneous P still reads negative at the moment of generation, but the export period accumulator stays empty. Per-tier behavior is in [`02_tiers.md`](02_tiers.md), polarity wiring is in [`04_hardware.md`](04_hardware.md).
 
 ---
 
@@ -381,6 +402,8 @@ The API client runs on any Python 3.8+ host on the same network — a Raspberry 
 
 When `apparent_power` is declared in the `sensor:` block, the component computes `S = U_rms × I_rms[ch0]` on the ESP32 from two fresh readings. If you need apparent power for several channels (CH1, CH2), or want to derive it from HA entities rather than from the component itself, use a `template` sensor in HA:
 
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
+
 ```yaml
 # configuration.yaml in HA
 template:
@@ -410,14 +433,13 @@ Note: `apparent_power` in the ESPHome schema uses only the CH0 current. The temp
 
 ## 7 · Reading rbAmp without ESPHome
 
-The rbAmp module is an ordinary I²C slave. Any I²C master can read it using the protocol from [`SPEC.md`](https://www.rbamp.com/docs/modules-basic-standard-api-reference). The sister client libraries (distribution repositories — placeholders until publication):
+The rbAmp module is an ordinary I²C slave. Any I²C master can read it using the protocol from the [module API reference](https://www.rbamp.com/docs/modules-basic-standard-api-reference). The sister client libraries (distribution repositories — placeholders until publication):
 
 | Library | Distribution | Language | Target platform |
 |---|---|---|---|
-| Arduino | [`rbamp-arduino`](https://github.com/rbamp/rbamp-arduino) | C++ | ESP32 (Arduino framework), AVR, RP2040 |
-| ESP-IDF | [`rbamp-esp-idf`](https://github.com/rbamp/rbamp-esp-idf) | C | ESP32 (IDF framework) |
-| Python (CPython + MicroPython) | [`rbamp-python`](https://github.com/rbamp/rbamp-python) | Python 3 | Raspberry Pi, Linux SBC, PC, ESP32/RP2040/STM32 on MicroPython |
-| STM32 HAL | [`rbamp-stm32-hal`](https://github.com/rbamp/rbamp-stm32-hal) *(in factoryment)* | C | STM32 (HAL), other Cortex-M |
+| Arduino | [`rbamp-arduino`](https://github.com/rb-amp/rbamp-arduino) | C++ | ESP32 (Arduino framework), AVR, RP2040 |
+| ESP-IDF | [`rbamp-esp-idf`](https://github.com/rb-amp/rbamp-esp-idf) | C | ESP32 (IDF framework) |
+| Python (CPython + MicroPython) | [`rbamp-python`](https://github.com/rb-amp/rbamp-python) | Python 3 | Raspberry Pi, Linux SBC, PC, ESP32/RP2040/STM32 on MicroPython |
 
 All libraries implement the same register map and period-metering protocol as the ESPHome component. They can be used independently or in parallel.
 
@@ -430,7 +452,7 @@ All libraries implement the same register map and period-metering protocol as th
 
 ### Cross-platform energy accumulation — a note
 
-The ESPHome component uses NVS-persisted `double` accumulators that survive a reboot. The sister libraries may use different persistence mechanisms — for the details and forward compatibility of a specific library, see its `10_troubleshooting.md` (energy persistence section). If you migrate from ESPHome to bare-metal firmware, plan the data migration: export the last Wh value from HA before the swap and seed the new firmware's accumulator with it.
+The ESPHome component uses NVS-persisted `double` accumulators that survive a reboot (on STANDARD modules they are additionally fed from the module's own energy counters). The sister libraries may use different persistence mechanisms — for the details and forward compatibility of a specific library, see its `10_troubleshooting.md` (energy persistence section). If you migrate from ESPHome to bare-metal firmware, plan the data migration: export the last Wh value from HA before the swap and seed the new firmware's accumulator with it.
 
 ---
 

@@ -5,7 +5,7 @@ bench-validation checklist** to run before tagging v1 and submitting to HACS.
 
 ## Prerequisites
 
-- ESPHome ≥ 2023.6 (needed for `i2c::I2CDevice::set_i2c_address()` in m6).
+- ESPHome ≥ 2025.3.0.
   Locally tested against 2026.3.x / 2026.4.x cgen — all 4 example YAMLs
   validate cleanly.
 - ESP32 dev board (DevKit-C or any board with usable I2C on GPIO21/22).

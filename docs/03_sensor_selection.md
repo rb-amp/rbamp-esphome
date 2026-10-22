@@ -11,8 +11,8 @@ The module's hardware revision determines which current-sensor family is support
 | Class | YAML value | State |
 |---|---|---|
 | SCT-013 (split-core CT) | `SCT_013` | Available now, default |
-| WIRED_CT (wired CT) | `WIRED_CT` | Reserved for future SKUs |
-| BUILTIN_CT (built-in shunt) | `BUILTIN_CT` | Reserved for future SKUs |
+| WIRED_CT (module with its own fitted wired CT) | `WIRED_CT` | Factory-paired: calibrated together with its sensor |
+| BUILTIN_CT (module with a built-in sensor) | `BUILTIN_CT` | Factory-paired: calibrated together with its sensor |
 
 The class is set once and stored in the module's flash:
 
@@ -22,13 +22,14 @@ rbamp:
   sensor_class: SCT_013   # defaults to SCT_013, can be omitted
 ```
 
-On firmware v1.2+, this value becomes a precondition for writing the CT model: the module will refuse if the class is not set. On earlier firmware the value is accepted by the schema and applied automatically on upgrade.
+On firmware v1.2+, this value becomes a precondition for writing the CT model: the module will refuse if the class is not set. The component never writes a class the module already has.
 
-### Read-compare-write boot writeback (v1.3+)
+### Write guards: read-compare-write (v1.3+) and factory protection (v1.8.1+)
 
-Starting with v1.3, on boot the component **reads** the current `REG_SENSOR_CLASS`
-(0x25) and compares it with the YAML-requested value. If they match, the flash write
-**does not happen**. This means:
+On boot the component **reads** the module's current sensor class and compares it with the
+YAML-requested value. If they match, the flash write **does not happen** (a class write on
+the module would also clear the channel models, so an unchanged value is never rewritten).
+This means:
 
 - The YAML block can keep `sensor_class: SCT_013` forever — a repeat boot
   does not trigger a flash erase (~0 ms instead of ~700 ms).
@@ -37,44 +38,35 @@ Starting with v1.3, on boot the component **reads** the current `REG_SENSOR_CLAS
 
 The same behavior applies to `ct_model:` / `ct_models:` (see below).
 
-> **What "reserved" means** for `WIRED_CT` and `BUILTIN_CT` — the component's
-> schema accepts both values today (the YAML validates, no `cv.Invalid`
-> is raised). However, **no current rbAmp hardware revision physically
-> supports them**: the module will accept writing the class to the
-> register, but without the matching front-end (`WIRED_CT` — a copper
-> resistive shunt on the conductor bar; `BUILTIN_CT` — a built-in
-> toroidal CT on the module board) the readings will bear no relation to reality.
->
-> For production deployments today, **choose only `SCT_013`** (or
-> omit the key — that is the default). Declaring `WIRED_CT` / `BUILTIN_CT` without
-> the matching hardware is an anti-pattern that the component does not
-> detect and will not warn about.
->
-> These classes will enter the production documentation after the release of the
-> rbAmp-WiredCT / rbAmp-BuiltinCT SKUs — watch [11_changelog.md](11_changelog.md).
+> **Factory-paired modules (`WIRED_CT` / `BUILTIN_CT`).** A module supplied together
+> with its own fitted sensor is calibrated as a pair with that sensor. The component
+> protects that calibration: a `sensor_class:` or `ct_model:` change from YAML on such a module is
+> **refused** with an explicit log line (the write would replace the individual calibration with a
+> generic setting). Leave both keys out of the YAML for these modules. For SCT-013 clamps
+> (`SCT_013`, the default) the keys work as described below.
 
 ## Choosing the SCT-013 Model
 
-The module accepts any of the five production-ready models in the SCT-013 series.
+The module accepts any of the seven models in the SCT-013 series.
 Their electrical output differs, so the module needs to know which one is
 installed — the factory coefficients are loaded for the specific model.
+
+**Which model do I have?** Read the rating off the label on the clamp body: `SCT-013-030`
+means 30 A, so you write `ct_model: SCT_013_030`. Use the model whose rating matches the label,
+not the one that "looks closest" to your load.
 
 | Code | YAML name | Rated current | Typical load | Maximum at 230 V | v1.3 status |
 |---|---|---|---|---|---|
 | 1 | `SCT_013_005` | 5 A | LED lighting, single appliances, laptops | ~1.15 kW | production |
 | 2 | `SCT_013_010` | 10 A | Desktop PCs, small AC unit, single circuit | ~2.3 kW | production |
-| 6 | `SCT_013_020` | 20 A | Water heaters, medium branches, ~3-5 kW | ~4.6 kW | **production (new in v1.3)** |
+| 6 | `SCT_013_020` | 20 A | Water heaters, medium branches, ~3-5 kW | ~4.6 kW | production |
 | 3 | `SCT_013_030` | 30 A | Whole-home metering at typical consumption | ~6.9 kW | production (default SKU) |
 | 4 | `SCT_013_050` | 50 A | EV charging, large AC unit, induction hob | ~11.5 kW | production |
-| 5 | — | 100 A | (formerly `SCT_013_100`) | ~23 kW | **reserved — unavailable in v1.3** |
-| 7 | — | 60 A | (previously undeclared; no characterization) | — | uncharacterized |
+| 7 | `SCT_013_060` | 60 A | Industrial sub-meter, large branches | ~13.8 kW | production |
+| 5 | `SCT_013_100` | 100 A | Main service entrance, large feeds | ~23 kW | production |
 
-> **What happened to `SCT_013_100`?** Code 5 in v1.3 firmware is reserved and
-> returns `DEV_ERR_PARAM` on a write attempt. If the YAML had `SCT_013_100`,
-> `esphome config` will reject the config with a hint listing the allowed values. For
-> markets that need > 50 A (three-phase panels, commercial distribution),
-> watch for the WIRED_CT SKU release or use several channels with
-> `SCT_013_050` in parallel.
+> **Installations above 50 A.** `SCT_013_060` (60 A) and `SCT_013_100` (100 A)
+> are accepted; pick the clamp whose rating fits your maximum current.
 
 The burden resistor is already installed on the module board — no external resistors between the clamp's output leads need to be added.
 
@@ -100,7 +92,6 @@ The burden resistor is already installed on the module board — no external res
   |
   +-- > 50 A   (panels, commercial)
           → several SCT_013_050 in parallel (split into channels)
-            or the WIRED_CT SKU (roadmap)
 ```
 
 General rule: choose the clamp with the lowest rating whose maximum measurable value covers the peak load with a ~30% margin. An oversized rating on a small load lowers the signal amplitude relative to noise — accuracy drops. A clamp rated below the peak will saturate the magnetic core and give grossly wrong readings.
@@ -113,24 +104,25 @@ flash + boot. The allowed sets **are not contiguous** — this is explicit canon
 
 | sensor_class | Allowed codes | YAML names | Behavior on mismatch |
 |---|---|---|---|
-| `SCT_013` | {1, 2, 3, 4, 6} | `SCT_013_005/010/030/050/020` | `cv.Invalid` with a hint |
+| `SCT_013` | {1, 2, 3, 4, 5, 6, 7} | `SCT_013_005/010/030/050/100/020/060` | `cv.Invalid` with a hint |
 | `WIRED_CT` | {1, 2, 3} | `WIRED_CT_1` / `WIRED_CT_2` / `WIRED_CT_3` | `cv.Invalid` |
 | `BUILTIN_CT` | {} (none) | — | `cv.Invalid` (any ct_model is rejected) |
 | `UNSET` | {} | — | `cv.Invalid` (class not set) |
 
 Specifically:
 
-- **`SCT_013` non-contiguous**: code 5 (`SCT_013_100`) and code 7 (60 A) are not
-  allowed — the firmware does not load a factory coefficient table for them.
-- **`WIRED_CT`** is a roadmap SKU; on the current board it accepts codes 1/2/3 as
-  factory preset slots (for future characterization). It does not activate on the SCT_013 board.
-- **`BUILTIN_CT`** is the onboard CT (built-in shunt); `ct_model:` is neither needed nor
-  accepted. Declaring `BUILTIN_CT` without the matching hardware is pointless.
+- **`SCT_013` non-contiguous**: the accepted codes are `{1, 2, 3, 4, 5, 6, 7}`
+  (`SCT_013_005`, `_010`, `_030`, `_050`, `_100`, `_020`, `_060`); the code order is not
+  the rating order.
+- **`WIRED_CT`** is the class of modules supplied with their own fitted wired CT; the schema
+  accepts codes 1/2/3 for it. The module is factory-calibrated with that sensor, so the component
+  refuses to change class or model on it (see the factory-paired note above).
+- **`BUILTIN_CT`** is the class of modules with a built-in sensor; `ct_model:` is neither needed nor
+  accepted by the schema. Declaring `BUILTIN_CT` without the matching hardware is pointless.
 
 If the YAML slips past the validator (old schema + new firmware, manual
 override), the firmware returns `REG_ERROR = 0xFE DEV_ERR_PARAM` — the module will not
-write an unsupported code. Validated on the bench: an attempt to write code 5
-(`SCT_013_100`) on v1.3 firmware → `DEV_ERR_PARAM`, the mirrors stay at the
+write an unsupported code: it returns `DEV_ERR_PARAM` and the mirrors stay at the
 prior value.
 
 ## How to Tell the Module
@@ -160,12 +152,14 @@ rbamp:
   #         ↑                            ↑                           ↑
   #     channel 0                     channel 1                channel 2
   #
-  # This is a standard YAML list (1..3 elements).
+  # This is a standard YAML list (1..16 elements; only as many as the module has channels are applied).
   # Order matters: the position in the list = the channel index.
-  # Validated v1.3 on the bench: codes [1, 3, 6] → mirrors `01 03 06`, no clobber.
+  # Mixed codes such as [1, 3, 6] are each kept on their own channel.
 ```
 
-This is the spot where people most often trip up when modifying multi-channel systems. Remember: `ct_model:` (no `s`) is a scalar value for a single model; `ct_models:` (with `s`) is a list of values in square brackets, one per channel. The list length must match the number of active channels on the module (1 for UI1, 2 for UI2, 3 for UI3).
+This is the spot where people most often trip up when modifying multi-channel systems. Remember: `ct_model:` (no `s`) is a scalar value for a single model; `ct_models:` (with `s`) is a list of values in square brackets, one per channel. Only as many entries as the module has channels are applied (1 for UI1, 2 for UI2, 3 for UI3); extra entries are ignored with a warning.
+
+> **STANDARD (STD) modules.** Per-channel models are stored only by modules that keep them across a power cycle. If the connected module does not, the component refuses loudly (warning, keys ignored) rather than writing a value that would silently revert — use the single `ct_model:` there.
 
 > ⚠ **Mutually exclusive**. Declaring both `ct_model:` AND `ct_models:` at the same time is a schema validation error (`cv.Invalid`). Use only one of the two.
 
@@ -204,7 +198,7 @@ The component itself assigns the exact model to each channel on boot.
 
 On firmware v1.2+, writing `ct_model:` / `ct_models:` atomically loads the factory coefficients (noise floor + gain) for the chosen model into the module's RAM and saves them to flash. No additional calibration steps are required on the user's side — the module ships from the factory with all the necessary coefficient tables.
 
-On earlier firmware the value is stored as a model marker. Full auto-loading of coefficients will come with a firmware upgrade — the YAML will not need to change.
+On earlier firmware the value is stored as a model marker.
 
 #### Read-compare-write (v1.3+) — why boot is now "instant"
 
@@ -222,13 +216,32 @@ the flash write is **skipped** entirely.
 **In practice**: keep `ct_model:` / `ct_models:` in YAML forever —
 the config is idempotent and will not wear out the flash on repeat boots.
 
-#### Canon order — descending iteration on multi-channel
+#### Changing the SCT rating keeps the accuracy
 
-On a cold install of three models the component iterates the channels in **descending
-order** (ch2 → ch1 → ch0) with a per-iteration sequence:
-`REG_CT_MODEL=code → CMD_SET_CT_MODEL_CHn → CMD_SAVE_USER_CONFIG`. This is
-canon A1 (order-independent CT bind) — validated on the bench in v1.3: mixed
-codes `[1, 3, 6]` on I3 → mirrors `01 03 06`, **no clobber**.
+On an STD module `ct_model` is a label only and sets no gain. The rest of this section describes BASIC modules.
+
+Every SCT module is factory-calibrated with the SCT-013-030. When you select another
+rating (`ct_model: SCT_013_010`, say), current, power and energy stay accurate — the
+factory per-unit calibration is preserved:
+
+- On module firmware up to 1.4.19 the component completes the model write with the module
+  restart the procedure requires (save, reset, re-identify) and scales current, active/reactive
+  power and energy to the selected sensor from the gain the module actually applies. The
+  restart shows in the log and is normal; sensors may skip one cycle. A later module restart
+  (yours or external) is detected and the scaling is recomputed automatically.
+- On newer firmware (1.4.20+) the module performs the switch itself; the component detects
+  this and leaves the readings untouched (plain model write, no restart).
+- Voltage and power factor are not affected.
+- If the gain the module applies differs from the expected value by more than ±5 %, the
+  component logs a warning and does not scale.
+
+No YAML change is needed for any of this.
+
+#### Multi-channel binding
+
+The component binds channels one by one; the order does not matter. Mixed models on
+one module (for example codes `[1, 3, 6]` on a three-channel module) are each kept on
+their own channel.
 
 The component itself feeds the watchdog (`App.feed_wdt()`) during each
 flash-write window — the typical ESPHome `setup()` budget of 15 s is not exceeded even
@@ -254,7 +267,7 @@ Detailed symptom-oriented diagnostics are in [10_troubleshooting.md](10_troubles
 The clamp body carries an arrow showing the direction of "normal" energy flow (consumption, toward the load). With correct installation (the arrow pointing in the direction of current into the load):
 
 - `P_real > 0` — consumption.
-- `P_real < 0` — export (STANDARD / PRO only).
+- `P_real < 0` — export (STANDARD (STD) only).
 
 If active power is negative with a consumer running — physically flip the clamp on the conductor. Do not correct polarity in software: it masks directional bugs in downstream automations.
 
@@ -262,7 +275,7 @@ The clamp must close completely around a **single** conductor. Do not pass both 
 
 ## Voltage Channel
 
-UI* SKUs contain a built-in voltage transformer. The primary winding connects to mains L and N through the module's terminal blocks, and the secondary is loaded onto the board's burden network and connected to the ADC.
+UI* SKUs contain a built-in voltage transformer. The primary winding connects to mains L and N through the module's terminal blocks, and the module measures it internally.
 
 The transformer's factory configuration is fixed on the board revision — the user has nothing to configure. The `voltage` sensor is ready to work out of the box.
 

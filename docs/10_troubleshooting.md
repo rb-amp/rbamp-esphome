@@ -6,7 +6,7 @@ A symptom-oriented debugging guide for the `rbamp` component in ESPHome. Every e
 
 Contents:
 
-1. [I²C / hardware](#1-ic--hardware)
+1. [I2C / hardware](#1-i2c--hardware)
 2. [Data quality](#2-data-quality)
 3. [Energy and persistence](#3-energy-and-persistence)
 4. [Home Assistant integration](#4-home-assistant-integration)
@@ -15,7 +15,7 @@ Contents:
 
 ---
 
-## 1. I²C / hardware
+## 1. I2C / hardware
 
 ### Probe failed at 0x50 — no response
 
@@ -42,7 +42,7 @@ The ESP32 sent the address phase to 0x50 (or another address from `address:`) an
 
     If the scan found the device, the `address:` key in your `rbamp:` block is wrong — update it.
 
-2. Measure 3.3 V on the module's VCC pin with a multimeter. Zero or < 3.0 V means power is missing or marginal.
+2. Measure the supply on the module's VCC pin with a multimeter: it must be 4.5..5.5 V (5 V nominal, see [04_hardware.md](04_hardware.md)). Zero or below 4.5 V means power is missing or marginal.
 
 3. Check the continuity of SDA and SCL from the ESP32 GPIO to the module connector. A missing or swapped wire is the most common cause on fresh builds.
 
@@ -66,7 +66,7 @@ The ESP32 sent the address phase to 0x50 (or another address from `address:`) an
 
 **How to diagnose**:
 
-1. If the entry appears once at boot (in the first 30 s after power-up) and then disappears, this is normal. The module needs one commit cycle (~200 ms) to set the READY bit after power-up. The startup latch in `setup()` also produces one skipped cycle.
+1. If the entry appears once at boot (in the first 30 s after power-up) and then disappears, this is normal. The module needs one commit cycle (~100 ms) to set the READY bit after power-up. The startup latch in `setup()` also produces one skipped cycle.
 
 2. If the message streams continuously after warm-up, the module may be stuck. Check for repeated `ct_model:` / `ct_models:` entries (for example, a key left in the YAML that is written on every boot, producing a permanent flash-write window).
 
@@ -185,7 +185,7 @@ recommendations):
    firmware v1.1/v1.3, but 50 kHz remains recommended on ESP-IDF masters
    because the driver-timing interaction persists.
 2. **Hardware**: an external **4.7 kΩ pull-up** on SDA + SCL (a single external
-   pull-up pair, with the in-module jumpers cut — see [§Multi-module bus](#multi-module-bus-primary-topology)).
+   pull-up pair, with the in-module jumpers cut — see [§Multi-module bus](04_hardware.md#multi-module-bus-primary-topology)).
    The ESP32 internal pull-ups (~50 kΩ) are **weak** — on a long bus or with a
    marginal supply they are not enough. 4.7 kΩ pull-ups to clean 3.3 V are
    mandatory for a production deployment.
@@ -194,7 +194,7 @@ recommendations):
    hung (the slave continues to drive SDA), which is exactly what provokes the
    bus-busy infinite-spin.
 
-**Hang rate validated on the bench** (Fix-A fleet, 24-hour soak):
+**Hang rate observed in a 24-hour soak test:**
 
 | Layer | Hang rate | Note |
 |---|---|---|
@@ -278,7 +278,7 @@ Power is 0 W, energy does not grow, but voltage reads correctly (for example 228
 
 **What it means**: one of two typical causes:
 
-**Cause 1 — `ct_model:` is not set or does not match the physical clamp**. On firmware v1.2+ the module uses the factory coefficients for the model selected in the YAML. If `ct_model:` is unset, or set to, say, `SCT_013_050` with a real SCT-013-005, the measurement range is so much wider than the physical signal that the AC-ADC resolution yields zero counts.
+**Cause 1 — `ct_model:` is not set or does not match the physical clamp**. On firmware v1.2+ the module uses the factory coefficients for the model selected in the YAML. If `ct_model:` is unset, or set to, say, `SCT_013_050` with a real SCT-013-005, the measurement range is so much wider than the physical signal that the module cannot resolve it and reports zero.
 
 **Cause 2 — the clamp is installed incorrectly** on the conductor (see polarity in [03_sensor_selection.md](03_sensor_selection.md) and clamping around only one conductor).
 
@@ -312,7 +312,7 @@ rbamp:
   # CH0 — SCT-013-005 for resolving idle loads (~5..50 W)
   # CH1 — SCT-013-030 for the main household load (~50..7000 W)
   # CH2 — SCT-013-050 for the peak (EV-charging headroom up to 11.5 kW)
-  # NOTE v1.3: SCT_013_100 reserved; for peaks > 50A — several SCT_013_050 in parallel
+  # For peaks above 50 A use SCT_013_060 (60 A) or SCT_013_100 (100 A) on that channel
 ```
 
 All three clamps clamp around the **same** L-phase conductor.
@@ -320,6 +320,8 @@ SCT-013-005 gives ~10× better resolution on small currents than
 SCT-013-030, but saturates at ~5 A. SCT-013-030 covers the "middle"
 of the useful range; SCT-013-050 catches peak surges up to ~11.5 kW without saturating.
 On the HA side, a template sensor selects the "active" measurement by threshold:
+
+*Home Assistant YAML (not ESPHome) — goes into your Home Assistant configuration, not the node's YAML.*
 
 ```yaml
 # configuration.yaml — select the active channel by range
@@ -339,7 +341,7 @@ template:
           {% endif %}
 ```
 
-This fully covers the 5 mA..100 A range.
+This covers the range from the smallest to the largest rated current of the three clamps (5 A … 50 A).
 Trade-off: three CT clamps on one conductor are physically
 bulky, and each occupies one module channel (on UI3 that is the whole
 module). For most deployments a single clamp with a rating matched to
@@ -363,7 +365,7 @@ The `energy` sensor in Home Assistant shows a constant (or stays at 0 Wh after b
 Normal causes:
 
 1. **First latch after boot**. The startup latch in `setup()` always discards its result — the module accumulator is reset on the first latch command. The second latch (one `update_interval` after boot) is the first one that integrates. Energy starts accumulating after the first full `update_interval` from boot.
-2. **Module cold start**. The module needs at least one ~200 ms commit cycle for any data in the period accumulator. If the first latch falls earlier, the valid flag is 0.
+2. **Module cold start**. The module needs at least one ~100 ms commit cycle for any data in the period accumulator. If the first latch falls earlier, the valid flag is 0.
 3. **Missed latch under heavy polling**. Under heavy I²C load the module side may miss a latch. The snapshot stays empty; the next latch should succeed.
 
 If the entry fires on **every** `update()` cycle indefinitely (not just the first two), the module may be in a state where the period accumulator never commits. Power-cycling the module clears this state.
@@ -372,7 +374,9 @@ If the entry fires on **every** `update()` cycle indefinitely (not just the firs
 
 ## 3. Energy and persistence
 
-### `energy_total` reset to 0 after a reboot
+### Energy sensor reset to 0 after a reboot
+
+> **STANDARD (STD) modules.** Energy comes from the module's own counters and is additionally saved to the ESP32 flash (NVS), so a reboot of the ESP32 or of the module does not reset it, and the totals do not step back. If a STANDARD-module sensor still starts from 0, the cause is an NVS wipe (flash erase, changed partition table) *and* a counter reset on the module at the same time. The grand-total sensors (`energy_total`, `energy_exported_total`, `energy_net`, `reactive_energy*`) use their own NVS slot, separate from the per-channel `energy` slots, so a component upgrade does not clear per-channel values.
 
 **What you see in the HA Energy dashboard**: a sharp drop to 0 Wh, then normal accumulation from 0. The old Wh history is preserved in HA long-term statistics, but the "current meter reading" looks reset.
 
@@ -406,57 +410,11 @@ If the restored value is noticeably lower than expected, the last 5-minute NVS s
 
 ---
 
-### Raw chip `REG_PERIOD_LATCH_MS` reads ~27% lower than the real period time (v1.3 diagnostic)
-
-**What you see** (if you read raw registers via `lambda:` or via direct
-i2c-debug):
-
-```
-[D][lambda:xxx]: REG_PERIOD_LATCH_MS = 14860  (chip-side period accumulator)
-[D][lambda:xxx]: t_master_dt          = 20003 ms (millis() between latches)
-```
-
-That is, the chip-side counter shows ~14.9 s while the wall-clock `millis()`
-shows ~20.0 s. The ~26–27% difference is **expected**, not a bug.
-
-**What it means**: the chip-side period counter (`REG_PERIOD_LATCH_MS` 0xEC and
-`REG_PERIOD_MS_FW` 0xCA) is counted on the microcontroller's SysTick timer,
-which suffers from **SysTick starvation** under full ISR load (DMA + I²C +
-period commit + zero-cross detector). This problem was measured on the bench: the chip
-counter reads ~26–27% lower than the real wall-clock time.
-
-**Canon L9**: the ESPHome component (like all sister libraries — esp-idf / arduino /
-python) does **NOT use** the chip-side counter for energy integration.
-Wh accumulation is computed on the master wall-clock via `millis()` (= ESP32
-`esp_timer_get_time()`):
-
-```cpp
-// finish_latch_phase_() in src/rbamp_period.cpp:
-uint32_t t_now = millis();
-uint32_t dt_ms = t_now - last_latch_ms_;
-e_wh[ch] += avg_p_w[ch] * (double)dt_ms / 3'600'000.0;
-last_latch_ms_ = t_now;
-```
-
-Wh is monotonic, with billing-grade accuracy. **Validated on the bench**: with
-master_dt/wall=0.999 vs latch_ms/wall=0.743, energy rel_err = 0.0000%.
-
-**Anti-revert callout**: if you fork the component and want to "optimize" it by
-switching integration to the chip-side `REG_PERIOD_LATCH_MS` — **DO NOT DO
-THIS**. It will give a ~27% Wh undercount. The anti-revert comment is inlined in
-`finish_latch_phase_` and in `rbamp_const.h`.
-
-**User-side diagnostics**: `REG_PERIOD_LATCH_MS` remains accessible via a raw
-register read (`lambda` access to the internal `RbAmpComponent::read_reg16_(0xEC)`).
-This is **diagnostic only** — for checking chip health, not for billing.
-
----
-
 ### Energy in HA does not match a reference meter
 
 **What you see**: the `energy` sensor in HA reads noticeably lower (for example 10–20%) than a reference smart meter or the utility meter over the same period.
 
-**What it means**: the component uses the ESP32-side `millis()` interval between latch commands as the integration time, not the module's timer. That is, the module's clock drift does **not** affect the accuracy of the energy accumulated in the component.
+**What it means**: on BASIC modules the component integrates the period-average power over the ESP32-side time between latch commands. On STANDARD modules it accumulates the module's own energy counters.
 
 If the energy reads low, look among these:
 
@@ -585,7 +543,7 @@ Error: Failed to install Python dependencies (exit code: 3221225501)
 
 (0xC0000001D = 3221225501 in decimal)
 
-**What it means**: PlatformIO 6.1.19+ uses the `uv` Rust binary to install Python dependencies into its internal `penv`. On Intel Lunar Lake CPUs (Core Ultra 7 255H and similar) `uv` crashes with `EXCEPTION_ILLEGAL_INSTRUCTION` due to an instruction-set incompatibility. This affects the `penv_setup.py install` step on a fresh PlatformIO install.
+**What it means**: PlatformIO 6.1.19+ uses the `uv` Rust binary to install Python dependencies into its internal `penv`. On some recent Intel laptop CPUs `uv` crashes with `EXCEPTION_ILLEGAL_INSTRUCTION` due to an instruction-set incompatibility. This affects the `penv_setup.py install` step on a fresh PlatformIO install.
 
 **Workaround** (pre-install all dependencies via pip, bypassing `uv`):
 
@@ -666,9 +624,9 @@ error: 'class esphome::rbamp::RbAmpComponent' has no member named 'get_object_id
 error: 'class esphome::i2c::I2CDevice' has no member named 'set_i2c_address'
 ```
 
-**What it means**: the `new_address:` address-change flow calls `i2c::I2CDevice::set_i2c_address()`, added in ESPHome 2023.6.
+**What it means**: the `new_address:` address-change flow calls `i2c::I2CDevice::set_i2c_address()`, which an older ESPHome lacks.
 
-**Fix**: update to ESPHome 2023.6 or newer. The HA ESPHome Add-on tracks the current release automatically — the recommended installation path.
+**Fix**: update to ESPHome 2025.3.0 or newer. The HA ESPHome Add-on tracks the current release automatically — the recommended installation path.
 
 ```sh
 # If using a local Python venv:
@@ -726,7 +684,7 @@ text_sensor:
     lambda: 'return id(my_meter).get_capability_hex();'  # → "0x0000"
 ```
 
-**What it means**: `REG_CAPABILITY` (0x57) does not exist on this firmware —
+**What it means**: the capability register does not exist on this firmware —
 it reads as 0 (the standard "register not implemented" behavior on rbAmp
 firmware). This is **legacy firmware v1.0–v1.2**.
 
@@ -734,7 +692,7 @@ firmware). This is **legacy firmware v1.0–v1.2**.
 address commit, save_user_config, clear_error) automatically fall back to the
 legacy path:
 
-- `fleet_gc_enable: true` → warning + skip (capability bit not set)
+- `fleet_gc_enable: true` → warning + skip (not advertised by the firmware)
 - `new_address:` → single-phase fallback, requires factory-provisioning mode
 - `clear_error()` → vendor opcode fallback (best effort)
 
@@ -755,8 +713,8 @@ breaks legacy.
 **What it means**: the firmware rejected the written value. The most common
 triggers:
 
-1. **Code 5 (`SCT_013_100`)** — reserved in v1.3 firmware, not accepted.
-   Replace it with `SCT_013_050` or `SCT_013_030`.
+1. **A code outside the accepted set** — for `SCT_013` the accepted codes are
+   `{1, 2, 3, 4, 5, 6, 7}`.
 2. **CT model not in the per-class allowed set** — for example `WIRED_CT_1` with
    `sensor_class: SCT_013`. See [03_sensor_selection.md per-class table](03_sensor_selection.md#per-class-ct-validation-new-in-v13).
 3. **Code 0 (UNSET)** — an attempt to clear the CT model via 0. Not supported;
@@ -774,9 +732,59 @@ api:
         - lambda: 'id(my_meter).write_clear_error();'
 ```
 
+### `ct_model:` / `sensor_class:` change is refused (log line, no write)
+
+**What you see**:
+
+```
+[W][rbamp:xxx]: ct_model refused: module is calibrated with its fitted sensor (class N) — ...
+[W][rbamp:xxx]: sensor_class refused: module is calibrated with its fitted sensor (class N); ...
+```
+
+**What it means**: the module was calibrated as a pair with its own fitted sensor (`WIRED_CT` / `BUILTIN_CT`). Writing a generic class or model would replace that individual calibration, so the component refuses. This is the write guard, not a fault. An equal value is also never written (nothing is logged at warning level for that).
+
+**Fix**: remove `sensor_class:` / `ct_model:` / `ct_models:` from the YAML for such a module. Only if you deliberately want the generic preset, set `ct_model_force: true` together with the model, flash once, and remove both lines afterwards (the schema rejects `ct_model_force:` without a model key).
+
+### `ct_models:` not supported by this device (STANDARD module)
+
+**What you see**:
+
+```
+[W][rbamp:xxx]: ct_models: (per-channel) not supported by this device — it does not advertise persistent per-channel model storage ... Use the global `ct_model:` key. (Keys ignored.)
+```
+
+**What it means**: the module cannot keep per-channel models across a power cycle, so writing them would silently revert. The component refuses instead of losing the value.
+
+**Fix**: use the single `ct_model:` key for all channels.
+
+### Changing `ct_model:` restarts the module once
+
+On SCT modules with firmware up to 1.4.19, switching to another rating completes with a module restart (save, reset, re-identify). The log shows the restart and, afterwards, that current/power/energy are scaled to the new rating; sensors may skip one `update()` meanwhile. This is part of the normal flow. Firmware 1.4.20 and newer performs the switch on the module and no restart happens. If the log reports that the applied gain is outside the expected range, the component does not scale; check that `ct_model:` matches the clamp that is physically installed.
+
+### Grand-total / angle sensors never publish
+
+**What you see** (boot log):
+
+```
+[W][rbamp:xxx]: energy_total/energy_net/reactive_energy sensors need on-device energy counters, which this device does not advertise — they will never publish. Per-channel `energy:` keys still work ...
+[W][rbamp:xxx]: voltage_angle_*/phase_sequence sensors need a newer device firmware — they will never publish on this device
+```
+
+**What it means**: the connected module (or its firmware) does not provide these values. The keys validate, but nothing is published.
+
+**Fix**: use the per-channel `energy:` sensors, or update the module firmware.
+
+### `start_current_ua:` ignored
+
+`[W][rbamp:xxx]: start_current_ua: not supported by this device firmware — key ignored` — the module counts energy at any current. The key only has an effect on STANDARD modules with on-device energy counters. Values other than `0` or `10`..`2540` in steps of `10` are rejected at `esphome config`.
+
+### `update_interval` rejected
+
+`update_interval` below `1s` is rejected by the schema at `esphome config`. `latch_interval` must not be shorter than `update_interval`.
+
 ### EVENT_FLAGS bit3 (ERR_LATCH) — re-latch behavior
 
-**What you see**: after `clear_error()`, ~200–300 ms later bit3 in `EVENT_FLAGS`
+**What you see**: after `clear_error()`, a few hundred milliseconds later bit3 in `EVENT_FLAGS`
 is **set** again (sticky re-latch).
 
 **What it means**: the firmware durable error channel **re-latches** bit3 after

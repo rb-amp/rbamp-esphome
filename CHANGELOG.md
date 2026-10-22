@@ -16,6 +16,7 @@ SCT rating switch without losing factory accuracy (8-bit line), plus the
 guard releases 1.8.x folded into this public release.
 
 ### Added
+- SCT-013-060 and -100 are accepted (they were refused client-side as reserved); sensor-model clip limits updated to measured values.
 - **SCT rating-switch correction** (modules with the SCT-013 sensor class,
   firmware ≤ 1.4.19). Every SCT module is factory-calibrated with the -030
   sensor; selecting another `ct_model:` used to leave current/power/energy
@@ -29,7 +30,7 @@ guard releases 1.8.x folded into this public release.
   of the calibration-model value, the component warns and does not scale.
   No YAML change needed.
 - Firmware **1.4.20+** performs the rating switch on-device and advertises
-  it (capability bit 12) — the component then detects it and leaves the
+  it (capability flag) — the component then detects it and leaves the
   readings untouched (plain model write, no restart).
 - Host test for the correction decision logic: `tests/host/test_sct_rating.cpp`
   (plain `g++`, no framework).
@@ -83,7 +84,7 @@ On-device cumulative energy for the 16-bit line.
 
 ## [1.7.0] — 2026-09-30
 
-Support for the new 16-bit register-map module generation, autodetected on
+Support for the new 16-bit register-map module line, autodetected on
 the same YAML.
 
 ### Added
@@ -122,8 +123,8 @@ persist fix. Firmware: v1.4.18+ required for senior channels 3+.
 - **Per-channel CT models on all channels.** `ct_models:` in YAML now accepts up
   to 16 entries. Module variant detection (`REG_TOPOLOGY`) determines how many
   are applied; extra entries produce a warning, not a failure.
-- **Sensor-model registry** — the model list is generated from
-  `libs/spec/sensor_models.yaml`. The two hardcoded lists (`CT_MODELS` dict +
+- **Sensor-model registry** — the model list comes from a
+  single registry. The two hardcoded lists (`CT_MODELS` dict +
   `CT_MODEL_ALLOWED_PER_CLASS`) are replaced by a single registry lookup. Adding
   a new CT SKU is now a registry edit — no library release needed.
 

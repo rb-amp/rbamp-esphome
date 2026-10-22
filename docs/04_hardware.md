@@ -4,10 +4,20 @@ This chapter covers physically wiring rbAmp to an ESP32: GPIO selection, pull-up
 
 > **Canonical deployment — a multi-module fleet on a single bus.** 80% of field
 > installations consist of 1× UI1 (mains) + N× I2/I3 (sub-meters) on one ESP32
-> I²C bus, with an external 4.7 kΩ pull-up. See [01_overview.md](01_overview.md)
+> I²C bus, with the pull-ups set per the table below. See [01_overview.md](01_overview.md)
 > for the fleet picture. A single module is the minimal case, not the canon. This
 > chapter covers both topologies, but multi-module is flagged as the "primary
 > topology" in the relevant sections.
+
+> **STANDARD (STD) modules.** Wiring, pull-up rules, power and the optional DRDY line are the same
+> for BASIC and STANDARD modules, and the same YAML works for both — the component identifies
+> the connected module at boot. `new_address:` works on both module lines. General-call fleet
+> sync (`fleet_gc_enable:` / `group_id:`) applies to BASIC modules only; on a STANDARD module
+> those keys are ignored with a log line.
+
+> **DANGER:** the L/N terminals carry mains voltage. De-energise and lock out the circuit before connecting, have a qualified person do mains wiring and any work inside a panel, clamp ONE conductor only (L), and never leave the CT clamp on a conductor with the CT jack unplugged.
+
+**Mains side in one glance.** Mains **L** and **N** go to the module's two terminals (they provide the voltage reading); the CT clamp plugs into the CT jack and goes around the **L conductor only**, arrow toward the load. Everything else in this chapter is the low-voltage side.
 
 ## LV-side pinout
 
@@ -15,11 +25,11 @@ The low-voltage side of the module exposes five signals. All are galvanically is
 
 | Pin | Signal | Description |
 |---|---|---|
-| `VCC` | +4.5..+5.5 V DC | Module power. 5 V nominal; below 4.5 V the ADC may lose accuracy. |
+| `VCC` | +4.5..+5.5 V DC | Module power. 5 V nominal; below 4.5 V the readings may become unreliable. |
 | `GND` | Common | Common with the master. Required. |
 | `SDA` | I²C data | 3.3 V logic; 5 V-tolerant. |
 | `SCL` | I²C clock | 3.3 V logic; 5 V-tolerant. |
-| `DRDY` | Data ready (optional) | Open-drain output. ~10 µs LOW pulse every ~200 ms after the instantaneous registers update. |
+| `DRDY` | Data ready (optional) | Open-drain output. ~10 µs LOW pulse every ~100 ms after the instantaneous registers update. |
 
 ## GPIO selection on the ESP32
 
@@ -51,7 +61,7 @@ If GPIO21/22 are taken, pick any other valid pair and update the `i2c:` block in
   GND          ────────────── GND          |
                                |           |
   (DRDY optional)              |           |
-  GPIO15 ◄──[10K to 3.3V]──── DRDY         |
+  GPIO15 ◄──[10K to 3.3V]──── DRDY         |   (optional - skip for first run)
                                +-----------+
 ```
 
@@ -98,7 +108,7 @@ i2c:
   frequency: 50kHz    # recommended on ESP32 — ESP-IDF i2c_master driver interaction, see below
 ```
 
-The module periodically NACKs reads from an ESP32 at 100 kHz (~20% of transactions) because of the interaction between the ESP-IDF v5 `i2c_master` driver timing and the post-STOP recovery window of the module's I²C peripheral (details in [`libs/spec/SPEC.md` Appendix B.5](https://www.rbamp.com/docs/modules-basic-standard-api-reference)). At 50 kHz the NACK rate drops by about a factor of 5, and the per-byte retry inside the component recovers > 99% of valid reads.
+The module periodically NACKs reads from an ESP32 at 100 kHz (a noticeable share of transactions) because of the interaction between the ESP-IDF v5 `i2c_master` driver timing and the post-STOP recovery window of the module's I²C peripheral. At 50 kHz NACKs are much rarer, and the per-byte retry inside the component recovers > 99% of valid reads.
 
 Firmware has hardened the module's I²C recovery window (shipped in v1.1 and v1.3), which shrank the module-side contribution — but **50 kHz remains the recommended setting on ESP-IDF-based masters** because the driver-timing interaction persists at 100 kHz. Treat it as the standing recommendation for ESP32, not a temporary workaround awaiting a fix.
 
@@ -113,8 +123,8 @@ Other I²C masters run this module at 100 kHz cleanly: STM32 HAL, RP2040 SDK, Ra
   -----                              |                   |
   GPIO22 (SCL) ──────────────────── SCL                  |◄[terminal L]── L
   GPIO21 (SDA) ──────────────────── SDA                  |◄[terminal N]── N
-  GPIO15 (input) ◄──[10K to 3.3V]── DRDY (open-drain)     |
-  3.3V ─────────────────────────── (pull-up reference above) |◄[CT-jack]── SCT-013
+  GPIO15 (input) ◄──[10K to 3.3V]── DRDY (optional - skip for first run)
+  (3.3V is used only for the optional DRDY resistor)       |◄[CT-jack]── SCT-013
   5V ──────────────────────────── VCC                    |
   GND ─────────────────────────── GND                    |
                                      +-------------------+
@@ -146,9 +156,9 @@ The ESP32 brownout detector trips at ~2.43 V on VDD. When it trips, the I²C bus
 
 ## Optional DRDY
 
-The module's DRDY pin is open-drain. It pulses LOW for ~10 µs every ~200 ms right after the block of instantaneous registers updates. It does not fire on the period snapshot.
+The module's DRDY pin is open-drain. It pulses LOW for ~10 µs every ~100 ms right after the block of instantaneous registers updates. It does not fire on the period snapshot.
 
-At `update_interval: 60s` you can omit DRDY — the component checks the status register at the start of each `update()` and skips the read if the module is not ready. DRDY is only useful when you need sub-second delivery of instantaneous data with minimal latency (interrupt-driven reads).
+At `update_interval: 60s` you can omit DRDY — the component checks the status register at the start of each `update()` and skips the read if the module is not ready. The component logs the DRDY pin; reads are timer-driven (`update_interval`).
 
 ### DRDY wiring
 
@@ -174,7 +184,7 @@ rbamp:
 
 ### Multi-module DRDY
 
-The DRDY signals from several modules can be wire-OR'd onto a single ESP32 GPIO (open-drain outputs combine naturally). The shared signal goes LOW when **any** module has updated its instantaneous registers. The component uses this only as a hint and does not tell which one fired.
+The DRDY signals from several modules can be wire-OR'd onto a single ESP32 GPIO (open-drain outputs combine naturally). The shared signal goes LOW when **any** module has updated its instantaneous registers. The component only logs the pin; it does not tell which module fired.
 
 If you need separate signals, route each module's DRDY to its own GPIO and declare `drdy_pin:` in each `rbamp:` block individually.
 
@@ -189,8 +199,8 @@ two-phase commit protocol.
 
 With `new_address: <N>` the component runs the following sequence:
 
-1. Checks the capability — reads `REG_CAPABILITY` (0x57). If `CAP_TWO_PHASE_ADDR`
-   (bit7) is set, it takes the production-mode path. If not, it falls back to the
+1. Checks whether the firmware supports the two-phase commit. If yes, it takes the
+   production-mode path. If not, it falls back to the
    legacy single-phase + factory-provisioning gating (v1.0-v1.2 firmware).
 2. Writes the new address to `REG_I2C_ADDRESS` (staged, not yet active).
 3. Writes the "magic word" `0xA5` to `REG_ADDR_COMMIT_MAGIC` — an explicit
@@ -202,8 +212,8 @@ With `new_address: <N>` the component runs the following sequence:
    and verifies re-enumeration with a probe-read.
 
 If any step fails, the module rolls back to the previous address, with no
-"half-applied" state left behind. Validated on bench 2026-06-16: round-trip
-0x50 → 0x60 → 0x50, post-commit re-enumeration < 1 s.
+"half-applied" state left behind. A round-trip 0x50 → 0x60 → 0x50
+re-enumerates in under a second.
 
 ### Sequential provisioning (recommended workflow)
 
@@ -219,8 +229,9 @@ collision (all on 0x50). So provisioning is sequential, one module at a time:
 4. Disconnect module 1. Connect module 2 (still at the factory `0x50`).
 5. Repeat for `0x52`, `0x53`, and so on. **MUST: only one virgin module on the
    bus at a time** — otherwise both answer on 0x50, which causes bus contention.
-6. When all modules have unique addresses, connect them all to the bus. Cut the
-   pull-up jumpers on all but one + add the external pair (see the rules above).
+6. When all modules have unique addresses, connect them all to the bus and set the
+   pull-ups per the table in [Multi-module bus](#multi-module-bus-primary-topology)
+   (2 modules: keep one pair; 3 or more: cut all and add one external pair).
 
 > **Danger of concurrent provisioning**: if two virgin modules are both at
 > 0x50, both ACK the address byte and drive SDA against each other on the data
@@ -269,7 +280,7 @@ sensor:
     energy:  { name: "EV Charger Energy" }
 ```
 
-The full version with annotations + `broadcast_latch:` forward-compat is in [`example/multi_module.yaml`](https://github.com/rb-amp/rbamp-esphome).
+The full version with annotations is in [`example/multi_module.yaml`](https://github.com/rb-amp/rbamp-esphome).
 
 ## Bus length
 
@@ -299,9 +310,9 @@ an error, visible in the ESPHome logs as a `WARNING` at boot.
 
 **Compatibility behavior** of the v1.3 component:
 
-- With `new_address:` the component **first** checks the `CAP_TWO_PHASE_ADDR` capability.
-  Set → production path (two-phase, no factory-provisioning gating).
-- If the capability bit is not set (legacy v1.0-v1.2 firmware) → fall back to the
+- With `new_address:` the component **first** checks whether the firmware supports the two-phase commit.
+  Yes → production path (two-phase, no factory-provisioning gating).
+- If it does not (legacy v1.0-v1.2 firmware) → fall back to the
   single-phase write, which only takes effect in factory-provisioning mode. The
   component logs this as `WARN_FACTORY_MODE_REQUIRED` in the boot log.
 
@@ -315,7 +326,7 @@ provisioning mode. On v1.3 firmware this issue does not exist.
 
 ## What's next
 
-- [05_quickstart.md](05_quickstart.md) — first run in 5 minutes
+- [05_quickstart.md](05_quickstart.md) — first run
 - [06_examples.md](06_examples.md) — complete scenarios: UI1 / UI3 / multi-module / address provisioning
 - [10_troubleshooting.md](10_troubleshooting.md) — symptom-oriented diagnostics
 
