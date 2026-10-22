@@ -105,7 +105,7 @@ flash + boot. The allowed sets **are not contiguous** — this is explicit canon
 | sensor_class | Allowed codes | YAML names | Behavior on mismatch |
 |---|---|---|---|
 | `SCT_013` | {1, 2, 3, 4, 5, 6, 7} | `SCT_013_005/010/030/050/100/020/060` | `cv.Invalid` with a hint |
-| `WIRED_CT` | {1, 2, 3} | `WIRED_CT_1` / `WIRED_CT_2` / `WIRED_CT_3` | `cv.Invalid` |
+| `WIRED_CT` | {1–10, 12} | `WIRED_CT_<code>` (for example `WIRED_CT_6`) | `cv.Invalid` |
 | `BUILTIN_CT` | {} (none) | — | `cv.Invalid` (any ct_model is rejected) |
 | `UNSET` | {} | — | `cv.Invalid` (class not set) |
 
