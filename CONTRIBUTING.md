@@ -1,16 +1,16 @@
 # Contributing to rbAmp
 
-Спасибо за интерес! Эти guidelines применимы ко всем public repos в [rb-amp](https://github.com/rb-amp) org.
+Thanks for your interest! These guidelines apply to all public repos in the [rb-amp](https://github.com/rb-amp) org.
 
 ## What kind of contributions
 
 ✅ **Welcome:**
-- Bug fixes (с tests если applicable)
+- Bug fixes (with tests if applicable)
 - Documentation improvements (typos, clarifications, examples)
 - New examples / tutorials in `rbamp-examples`
 - Translation improvements (FR/DE/ES/IT/PT/RU)
 - ESPHome / Arduino integration enhancements
-- Community projects (showcase via [forum.rbamp.com](https://forum.rbamp.com))
+- Community projects
 
 ⚠️ **Discuss first** (open an Issue):
 - Major refactors
@@ -46,13 +46,13 @@
 Documentation is auto-translated EN → FR/DE/ES/IT/PT via Claude Haiku 4.5 + glossary. RU is hand-written.
 
 If you spot a translation issue:
-1. Open an Issue с label `translation` and locale tag
+1. Open an Issue with label `translation` and locale tag
 2. Suggest correction in the Issue body
 3. We'll update the glossary if it's a recurring term, then re-run translation
 
 ## Code of Conduct
 
-See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Tl;dr: be respectful, focus на technical merits, no harassment.
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Tl;dr: be respectful, focus on technical merits, no harassment.
 
 ## License agreement
 

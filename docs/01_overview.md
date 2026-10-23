@@ -8,11 +8,7 @@
 
 ### Data flow (in one line)
 
-```text
-230 V mains → CT clamp + VT → rbAmp module (measures U/I/P/PF/Q) → I²C (physical units)
-                                                                  ↓
-                       Home Assistant ← ESPHome (publish_state) ← rbamp component
-```
+![Data flow of the ESPHome component: mains, CT clamp, rbAmp module, I²C, rbamp component, publish_state() and Home Assistant.](images/esphome-dataflow.png)
 
 The key selling point: **physical quantities arrive from the module ready to use**. On the ESP32 side there is no signal processing, no calibration tables, and no RMS/power math. The ESPHome component is a thin I²C client + an energy accumulator + a publishing layer to HA. No `lambda:` math is required for basic operation.
 
@@ -68,18 +64,7 @@ The primary rbAmp use case in ESPHome is **monitoring multiple loads from a sing
 
 All modules live on a **single I²C bus** of the ESP32 — each with its own address from the 0x50..0x77 range. The component supports `MULTI_CONF = True`, so a single YAML file can declare several `rbamp:` blocks and publish them all as independent entity sets in Home Assistant.
 
-```text
-                      ESP32 (master, ESPHome native API → HA)
-                              │
-              ┌───────────────┼───────────────┐
-              │ I²C bus (50 kHz, pull-ups per the table in 04)
-   ┌──────────▼──┐  ┌─────────▼──┐  ┌─────────▼──┐
-   │ rbAmp UI1   │  │ rbAmp I2   │  │ rbAmp I3   │
-   │ @ 0x50      │  │ @ 0x51     │  │ @ 0x52     │
-   │ mains meter │  │ boiler+AC  │  │ panel sub  │
-   │ (U + I + P) │  │ (2 channels)│  │ (3 channels)│
-   └─────────────┘  └────────────┘  └────────────┘
-```
+![One rbAmp module on the mains feed and one per sub-load share a single I²C bus to the master, each clamp on the L wire of its branch.](images/fleet-topology-mains-plus-subloads.png)
 
 In this scenario the ESP32 is the sole master: it emits a shared **General-Call latch** broadcast when `fleet_gc_enable: true`, and all modules atomically start a new accumulation period on a single wire moment. This gives **tight synchronization** between sub-meters — channel sums match feed sums to within the duration of a single period.
 
@@ -123,32 +108,7 @@ All instantaneous quantities are updated by the module autonomously at a ~100 ms
 
 ## Architecture
 
-```
-  230 V mains
-       |
-  +----+----+
-  | CT clamp |  (SCT-013 or a built-in shunt — SKU-dependent)
-  | voltage transformer |  (UI* SKUs only)
-  +---------+
-       |   galvanic isolation
-  +----|----+
-  |   metering     measures and computes RMS/P/PF
-  |  + I²C slave   address 0x50 (default), 50/100 kHz
-  +---------+
-       |   I²C (SDA/SCL + optional DRDY)
-  +----|----+
-  |  ESP32  |
-  |  ESPHome firmware (this component)
-  |  PollingComponent::update() every 60 s
-  |  Wh accumulation (BASIC: from period averages;
-  |  STANDARD: from the module's energy counters)
-  +---------+
-       |   Wi-Fi (ESPHome native API, port 6053)
-  +----|----+
-  |  Home Assistant
-  |  Energy dashboard, automations, history
-  +---------+
-```
+![The rbamp-esphome chain from the mains and CT clamp through the rbAmp module and the ESP32 ESPHome component to Home Assistant.](images/esphome-architecture.png)
 
 The measurement engine lives in the module; the ESP32 acts as a bridge to HA. On BASIC modules the Wh are integrated on the ESP32 against its own clock, which keeps accumulation across several modules consistent. STANDARD modules keep cumulative energy counters themselves and the ESP32 accumulates them.
 
@@ -157,6 +117,9 @@ The measurement engine lives in the module; the ESP32 acts as a bridge to HA. On
 The description below is the BASIC flow. On a STANDARD module the instantaneous branch is the same; the period branch is replaced by one coherent read of the module's energy counters, whose difference to the previous snapshot is added to the running totals (no latch step).
 
 Every `update()` call on a BASIC module runs two parallel branches:
+
+![Module measurement windows running on their own clock, and the ESP32 update() steps: latch, wait 50 ms, snapshot, RT read, publish.](images/esphome-dataflow-timings.png)
+
 
 ### Branch 1 — instantaneous values (RT block)
 

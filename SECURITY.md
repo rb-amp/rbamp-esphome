@@ -2,7 +2,7 @@
 
 ## Reporting Vulnerabilities
 
-If you find a security issue в any rbAmp software (firmware, libraries, integrations) or hardware:
+If you find a security issue in any rbAmp software (firmware, libraries, integrations) or hardware:
 
 📧 **security@rbamp.com**
 

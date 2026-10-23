@@ -19,6 +19,8 @@ This chapter covers physically wiring rbAmp to an ESP32: GPIO selection, pull-up
 
 **Mains side in one glance.** Mains **L** and **N** go to the module's two terminals (they provide the voltage reading); the CT clamp plugs into the CT jack and goes around the **L conductor only**, arrow toward the load. Everything else in this chapter is the low-voltage side.
 
+![Panel wiring: the CT clamp on the L wire after the incoming breaker, with the L and N voltage reference tap to the module.](images/mains-ct-connection-panel.png)
+
 ## LV-side pinout
 
 The low-voltage side of the module exposes five signals. All are galvanically isolated from the mains — the `GND` pin is the ESP32 GND, not the mains neutral.
@@ -30,6 +32,8 @@ The low-voltage side of the module exposes five signals. All are galvanically is
 | `SDA` | I²C data | 3.3 V logic; 5 V-tolerant. |
 | `SCL` | I²C clock | 3.3 V logic; 5 V-tolerant. |
 | `DRDY` | Data ready (optional) | Open-drain output. ~10 µs LOW pulse every ~100 ms after the instantaneous registers update. |
+
+![The five low-voltage pins of the rbAmp module and what each one needs.](images/hw-pinout.png)
 
 ## GPIO selection on the ESP32
 
@@ -52,18 +56,7 @@ If GPIO21/22 are taken, pick any other valid pair and update the `i2c:` block in
 
 ## Wiring a single module
 
-```
-  ESP32                        rbAmp
-  ------                       +-----------+
-  GPIO22 (SCL) ────────────── SCL          |
-  GPIO21 (SDA) ────────────── SDA          |
-  5V           ────────────── VCC          |
-  GND          ────────────── GND          |
-                               |           |
-  (DRDY optional)              |           |
-  GPIO15 ◄──[10K to 3.3V]──── DRDY         |   (optional - skip for first run)
-                               +-----------+
-```
+The complete ESP32 wiring is shown in the reference schematic below.
 
 External pull-up resistors are not needed for a single module — the rbAmp board already has built-in 4.7 kΩ pull-ups on SDA and SCL to 3.3 V.
 
@@ -73,6 +66,8 @@ Most rbAmp deployments are a **fleet of several modules** on a single ESP32 I²C
 bus: one UI1 on mains plus several I2/I3 on sub-branches. This is the primary
 topology the component was designed for, and the pull-up configuration below is
 optimized for it.
+
+![Several rbAmp modules on one I²C bus with the built-in pull-ups cut and one external pair at the master, plus the DRDY options.](images/hw-multimodule-bus.png)
 
 When two or more modules (or other I²C devices with their own pull-ups) share one bus, their pull-ups add in parallel. The combined resistance drops below the effective minimum — which leads to:
 
@@ -90,6 +85,10 @@ The bottom side of each rbAmp PCB has solder jumpers labeled `Pull-Up`. Cutting 
 | 4..6 | Cut on all. One external pair of **2.2..2.7 kΩ** at the ESP32. | 2.2..2.7 kΩ |
 | 7..16 | Cut on all. One external pair of **1.5..2.2 kΩ** at the ESP32 + a bus-capacitance check (see below). | 1.5..2.2 kΩ |
 | ESP32 already provides pull-ups | Cut on all modules. The ESP32 internal pull-ups (≥50 kΩ) are weak — a long bus still needs external 2.2..4.7 kΩ. | as above |
+
+The external values are recommended values (calculated from the I²C specification: sink current ≤ 3 mA at 3.3 V, bus capacitance ≤ 400 pF).
+
+![I²C pull-up rules for one, two and three or more modules, with the solder jumper on the module and the bus speed per host.](images/i2c-pullup-rules.png)
 
 **Selection logic**: the effective R_pullup is the parallel combination of all active pull-ups. The target range is 1.5..4.7 kΩ (the minimum is bounded by the ESP32 sink current ≤ 3 mA at 3.3 V; the maximum by the bus RC time constant). Formula: 1/R_eff = N/R_unit. For the built-in 4.7 kΩ pair: 2 modules = 2.35 kΩ, 3 = 1.57 kΩ, 4 = 1.18 kΩ — at 3 modules it already gets too low, which is why the table zeroes out the built-in jumpers starting at 3 modules and switches to a single external pair.
 
@@ -116,19 +115,7 @@ Other I²C masters run this module at 100 kHz cleanly: STM32 HAL, RP2040 SDK, Ra
 
 ## Reference schematic — one ESP32 + one rbAmp
 
-```
-                                         rbAmp
-                                     +-------------------+
-  ESP32                              |   LV side         | Mains side
-  -----                              |                   |
-  GPIO22 (SCL) ──────────────────── SCL                  |◄[terminal L]── L
-  GPIO21 (SDA) ──────────────────── SDA                  |◄[terminal N]── N
-  GPIO15 (input) ◄──[10K to 3.3V]── DRDY (optional - skip for first run)
-  (3.3V is used only for the optional DRDY resistor)       |◄[CT-jack]── SCT-013
-  5V ──────────────────────────── VCC                    |
-  GND ─────────────────────────── GND                    |
-                                     +-------------------+
-```
+![Reference wiring between an ESP32 dev board and an rbAmp module, with the CT clamp on the L wire and an optional DRDY line.](images/hw-wiring-esp32.png)
 
 Notes:
 
@@ -157,6 +144,8 @@ The ESP32 brownout detector trips at ~2.43 V on VDD. When it trips, the I²C bus
 ## Optional DRDY
 
 The module's DRDY pin is open-drain. It pulses LOW for ~10 µs every ~100 ms right after the block of instantaneous registers updates. It does not fire on the period snapshot.
+
+![Continuous 100 ms measurement windows, one DRDY pulse per window, and the master burst read of the atomic result block.](images/rt-window-timing.png)
 
 At `update_interval: 60s` you can omit DRDY — the component checks the status register at the start of each `update()` and skips the read if the module is not ready. The component logs the DRDY pin; reads are timer-driven (`update_interval`).
 
@@ -211,11 +200,15 @@ With `new_address: <N>` the component runs the following sequence:
 5. After ~700 ms the component rebinds its i2c_address handle to the new address
    and verifies re-enumeration with a probe-read.
 
+![The two-phase address change: stage, arm, commit, wait, reset, wait and verify at the new address.](images/init-addr-2phase.png)
+
 If any step fails, the module rolls back to the previous address, with no
 "half-applied" state left behind. A round-trip 0x50 → 0x60 → 0x50
 re-enumerates in under a second.
 
 ### Sequential provisioning (recommended workflow)
+
+![Provisioning addresses one virgin module at a time on the bus, then repeating for the next.](images/fleet-provisioning-one-virgin.png)
 
 Several modules together on the bus **before** provisioning is an address
 collision (all on 0x50). So provisioning is sequential, one module at a time:

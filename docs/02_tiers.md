@@ -1,6 +1,6 @@
 # 02 · Module Tiers
 
-![rbAmp product tiers: BASIC / STANDARD capability ladder](images/tier-ladder.png)
+![The two rbAmp module lines, BASIC and STANDARD (STD), and where energy is computed on each.](images/module-lines.png)
 
 rbAmp ships in two module lines: **BASIC** and **STANDARD (STD)**. Each tier is a complete combination of hardware revision and firmware build, not just a flag in the firmware. Moving between tiers requires physically swapping the module, not a firmware upgrade.
 
@@ -31,6 +31,8 @@ STANDARD (STD) is the current module line. It measures **import and export separ
 On an STD module energy comes from the module's own counters; `latch_interval` applies only to BASIC.
 
 Keys that exist only for the BASIC module line (`fleet_gc_enable:`, `group_id:`, `broadcast_latch:`, `latch_interval:` for the master-side energy path) are ignored on a STANDARD module with a log line.
+
+![Energy accounting on BASIC (master integrates the period average power) versus STANDARD (master reads the module's cumulative counters).](images/energy-basic-vs-std.png)
 
 ### PRO
 

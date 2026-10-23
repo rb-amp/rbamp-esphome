@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a bug в rbAmp software or integration
+about: Report a bug in rbAmp software or integration
 labels: bug
 ---
 

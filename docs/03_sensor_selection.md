@@ -72,27 +72,7 @@ The burden resistor is already installed on the module board — no external res
 
 ### Selection Tree
 
-```
-  Peak continuous current through the conductor:
-  |
-  +-- ≤ 5 A    (LED, single appliances, ≤ 1.15 kW)
-  |       → SCT_013_005    [code 1]
-  |
-  +-- 5..10 A  (PCs, small loads, ≤ 2.3 kW)
-  |       → SCT_013_010    [code 2]
-  |
-  +-- 10..20 A (water heaters, branches, ≤ 4.6 kW)
-  |       → SCT_013_020    [code 6, new in v1.3]
-  |
-  +-- 20..30 A (whole UK/EU home, ≤ 6.9 kW)
-  |       → SCT_013_030    [code 3, default SKU]
-  |
-  +-- 30..50 A (EV, large AC unit, ≤ 11.5 kW)
-  |       → SCT_013_050    [code 4]
-  |
-  +-- > 50 A   (panels, commercial)
-          → several SCT_013_050 in parallel (split into channels)
-```
+![Choosing an SCT-013 clamp: take the largest expected current plus 30 percent, pick the smallest rated clamp above it, and use its model code.](images/sct-model-chooser.png)
 
 General rule: choose the clamp with the lowest rating whose maximum measurable value covers the peak load with a ~30% margin. An oversized rating on a small load lowers the signal amplitude relative to noise — accuracy drops. A clamp rated below the peak will saturate the magnetic core and give grossly wrong readings.
 
