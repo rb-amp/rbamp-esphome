@@ -86,7 +86,7 @@ The bottom side of each rbAmp PCB has solder jumpers labeled `Pull-Up`. Cutting 
 | 7..16 | Cut on all. One external pair of **1.5..2.2 kΩ** at the ESP32 + a bus-capacitance check (see below). | 1.5..2.2 kΩ |
 | ESP32 already provides pull-ups | Cut on all modules. The ESP32 internal pull-ups (≥50 kΩ) are weak — a long bus still needs external 2.2..4.7 kΩ. | as above |
 
-The external values are recommended values (calculated from the I²C specification: sink current ≤ 3 mA at 3.3 V, bus capacitance ≤ 400 pF).
+The external values are recommended values (calculated from the I²C specification: sink current ≤ 3 mA at 3.3 V, bus capacitance ≤ 400 pF). Connect the external pull-ups to **3.3 V** (the logic level of the bus), not to the 5 V `VCC` supply.
 
 ![I²C pull-up rules for one, two and three or more modules, with the solder jumper on the module and the bus speed per host.](images/i2c-pullup-rules.png)
 

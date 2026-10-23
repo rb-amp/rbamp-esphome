@@ -81,7 +81,7 @@ def _load_from_yaml() -> Tuple[
 
 def _load_from_generated():
     """Same registry, from ``sensor_models_gen.py`` generated next to this file
-    (the stand-alone component has no monorepo YAML)."""
+    (the stand-alone component has no model YAML file)."""
     from . import sensor_models_gen as gen
 
     class_by_code = {
