@@ -17,6 +17,8 @@ This chapter covers physically wiring rbAmp to an ESP32: GPIO selection, pull-up
 
 > **DANGER:** the L/N terminals carry mains voltage. De-energise and lock out the circuit before connecting, have a qualified person do mains wiring and any work inside a panel, clamp ONE conductor only (L), and never leave the CT clamp on a conductor with the CT jack unplugged.
 
+**Wire and fuse.** A thick wire is not required for the voltage connection: AWG26–22 is enough, because the voltage sensor draws very little current. A fuse in the L line is **mandatory**, rated up to 0.1 A.
+
 **Mains side in one glance.** Mains **L** and **N** go to the module's two terminals (they provide the voltage reading); the CT clamp plugs into the CT jack and goes around the **L conductor only**, arrow toward the load. Everything else in this chapter is the low-voltage side.
 
 ![Panel wiring: the CT clamp on the L wire after the incoming breaker, with the L and N voltage reference tap to the module.](images/mains-ct-connection-panel.png)
@@ -277,16 +279,18 @@ The full version with annotations is in [`example/multi_module.yaml`](https://gi
 
 ## Bus length
 
-I²C is a short-haul protocol. Verified lengths for rbAmp:
+I²C is a short-haul protocol (~15 cm by default). Many users connect modules with low-quality jumper wires, which pick up a lot of noise and lose many transfers — hence the short limit. Recommended lengths for rbAmp:
 
 | Cable type | Maximum length | Speed |
 |---|---|---|
-| Standard JST / 4-wire flat | 0.3 m | 50 kHz |
+| Standard JST / 4-wire flat | 0.15 m | 50 kHz |
 | Twisted pair (SDA+GND and SCL+GND in separate pairs) | 1 m | 50 kHz |
 | Twisted pair + I²C buffer (PCA9515 / TCA9617) | 3 m | 50 kHz |
 | Differential bus (PCA9615 / LTC4332) | 100 m | 50 kHz |
 
-For longer than 0.3 m, use twisted pair, and SDA and SCL must lie in **separate** pairs (for example blue + white-blue for SDA, green + white-green for SCL). If SDA and SCL share one pair, cross-coupling distorts the edges even at 50 kHz.
+For longer than 0.15 m, use twisted pair, and SDA and SCL must lie in **separate** pairs (for example blue + white-blue for SDA, green + white-green for SCL). If SDA and SCL share one pair, cross-coupling distorts the edges even at 50 kHz.
+
+> ⚠ **Inside an electrical cabinet, shield the I2C cable.** Strong magnetic fields near mains conductors, contactors and transformers induce noise in an unshielded cable. Keep the cable as short as possible and away from the mains wiring.
 
 ## Factory-provisioning mode (legacy firmware v1.0-v1.2)
 
