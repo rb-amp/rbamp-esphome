@@ -13,8 +13,8 @@ namespace rbamp {
 
 enum class Topology : uint8_t {
   SINGLE = 0,       // UI1/UI2/UI3, I1/I2/I3 — one voltage, 1..3 current channels
-  SPLIT_PHASE = 1,  // U2I2 (US) — two voltages 180° apart, two current channels
-  THREE_PHASE = 2,  // U3I3 — three voltages, three current channels
+  SPLIT_PHASE = 1,  // split-phase (US) — two voltages 180° apart, two current channels
+  THREE_PHASE = 2,  // three-phase — three voltages, three current channels
 };
 
 // NVS payload for energy persistence. Layout MUST stay trivially-copyable
@@ -195,7 +195,7 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   void set_energy_net_sensor(sensor::Sensor *s) { energy_grand_net_ = s; }
   void set_reactive_energy_sensor(sensor::Sensor *s) { reactive_energy_import_ = s; }
   void set_reactive_energy_exported_sensor(sensor::Sensor *s) { reactive_energy_export_ = s; }
-  // v1.8 — voltage phase angles vs phase A (U3I3; fw 0x7A+) + phase sequence.
+  // v1.8 — voltage phase angles vs phase A (three-phase modules; fw 0x7A+) + phase sequence.
   void set_voltage_angle_b_sensor(sensor::Sensor *s) { voltage_angle_[1] = s; }
   void set_voltage_angle_c_sensor(sensor::Sensor *s) { voltage_angle_[2] = s; }
   void set_phase_sequence_sensor(sensor::Sensor *s) { phase_sequence_ = s; }

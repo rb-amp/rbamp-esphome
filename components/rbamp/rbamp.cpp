@@ -306,10 +306,10 @@ const char *RbAmpComponent::std_variant_str_() const {
     case rbamp_std::VARIANT_I2:   return "I2";
     case rbamp_std::VARIANT_I3:   return "I3";
     case rbamp_std::VARIANT_U2I1: return "U2I1";
-    case rbamp_std::VARIANT_U2I2: return "U2I2";
+    case rbamp_std::VARIANT_SPLIT_PHASE: return "SPLIT_PHASE";
     case rbamp_std::VARIANT_U2I3: return "U2I3";
-    case rbamp_std::VARIANT_U3I3: return "U3I3";
-    case rbamp_std::VARIANT_U3I6: return "U3I6";
+    case rbamp_std::VARIANT_3PH_3CH: return "3PH_3CH";
+    case rbamp_std::VARIANT_3PH_6CH: return "3PH_6CH";
     default:                      return "UNK";
   }
 }
