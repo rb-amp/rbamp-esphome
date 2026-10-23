@@ -112,6 +112,17 @@ sensor:
 See [`example/`](example/) for UI3 mixed-CT (`ui3.yaml`), a synchronized multi-module fleet
 (`multi_module.yaml`), and one-shot address provisioning (`address_change.yaml`).
 
+## Examples
+
+Ready-to-use YAML configurations under [`example/`](example/). Adjust the board, Wi-Fi credentials (`!secret`) and GPIO pins to your hardware. More recipes: [06 Examples](docs/06_examples.md).
+
+| File | What it shows |
+|---|---|
+| [`ui1.yaml`](example/ui1.yaml) | minimal configuration: one voltage and one current channel |
+| [`ui3.yaml`](example/ui3.yaml) | voltage and three current channels, all single-phase fields |
+| [`multi_module.yaml`](example/multi_module.yaml) | three modules on one bus with a shared General-Call snapshot (`fleet_gc_enable`, `group_id`) |
+| [`address_change.yaml`](example/address_change.yaml) | one-shot I²C address change at boot |
+
 ## Documentation
 
 Full guides — quickstart, sensor selection, hardware, multi-module fleets, Home Assistant
@@ -133,6 +144,8 @@ The same chapters are in this repository, in [`docs/`](docs/):
 | [09 Schema reference](docs/09_api_reference.md) | Every YAML key, type, range, default |
 | [10 Troubleshooting](docs/10_troubleshooting.md) | Symptom-driven debugging |
 | [11 Changelog](docs/11_changelog.md) | Version history |
+
+Register-level (native) protocol documentation, for integrations without this library: [rbamp-docs](https://github.com/rb-amp/rbamp-docs).
 
 ## Testing
 
