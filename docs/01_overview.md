@@ -80,7 +80,7 @@ A single-module configuration (UI1 on mains, no sub-meters) is the minimal case,
 | Power factor (signed) | `power_factor` / `power_factor_1` / `power_factor_2` | −1..+1 | ±0.01 at PF ≈ 1 (resistive load) with SCT-013 sensors rated 10 A and above; the 5 A sensor's own phase shift adds up to ~0.015 of reading error — a purely resistive load reads ~0.985–0.993 |
 | Reactive power (unsigned, √(S² − P²), includes distortion; no accuracy stated) | `reactive_power` / `reactive_power_1` / `reactive_power_2` | same as P | — |
 | Apparent power | `apparent_power` (CH0 only; for CH1/CH2 use an HA template sensor, see [07_diy_integrations.md](07_diy_integrations.md) §6) | same as P | ±2% |
-| Mains frequency | `frequency` | 45..65 Hz | ±0.5 Hz |
+| Mains frequency | `frequency` | 50 / 60 Hz (detected on BASIC) | — |
 | Accumulated energy (Wh) | `energy` / `energy_1` / ... (per channel); `energy_total` / `energy_exported_total` / `energy_net` (STANDARD (STD), all channels) | 64-bit | depends on P accuracy |
 | Reactive energy (varh) | `reactive_energy` / `reactive_energy_exported` (STANDARD) | 64-bit | — |
 
