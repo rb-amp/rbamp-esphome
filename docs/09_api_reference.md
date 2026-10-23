@@ -23,6 +23,8 @@ Contents:
 
 ## 1. Component block — `rbamp:`
 
+> **Native protocol:** [Multi-module setup (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#multi-module-setup) · [Multi-module polling — three strategies (realtime-polling)](https://github.com/rb-amp/rbamp-docs/blob/main/realtime-polling.md#multi-module-polling--three-strategies) · [Multi-module issues (troubleshooting)](https://github.com/rb-amp/rbamp-docs/blob/main/troubleshooting.md#multi-module-issues)
+
 The top-level `rbamp:` block registers a component instance. It inherits from `PollingComponent` (which provides `update_interval`) and `i2c.I2CDevice` (which provides `address` and the I²C bus handle). `MULTI_CONF: True` means any number of `rbamp:` blocks can coexist in one YAML, each referencing its own I²C slave.
 
 ```yaml
@@ -67,6 +69,8 @@ rbamp:
 
 ### `address`
 
+> **Native protocol:** [02 · Initialization and Start-up (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#02--initialization-and-start-up) · [3.6 Canonical detection algorithm (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#36-canonical-detection-algorithm) · [6 · Protocol sequences (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#6--protocol-sequences)
+
 | Attribute | Value |
 |---|---|
 | Type | `i2c_address` (7-bit, 0x08..0x77) |
@@ -87,6 +91,8 @@ Cross-reference: [the I²C bus protocol](https://www.rbamp.com/docs/modules-basi
 ---
 
 ### `update_interval`
+
+> **Native protocol:** [04 · Period Metering and Tariff Accounting (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#04--period-metering-and-tariff-accounting) · [Continuous polling cycle (recommended) (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#continuous-polling-cycle-recommended) · [Period snapshot registers (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#period-snapshot-registers)
 
 | Attribute | Value |
 |---|---|
@@ -113,6 +119,8 @@ rbamp:
 ---
 
 ### `latch_interval`
+
+> **Native protocol:** [Continuous polling cycle (recommended) (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#continuous-polling-cycle-recommended) · [4.11 V03 period block (0xBE..0xCF) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#411-v03-period-block-0xbe0xcf) · [6.4 Period sync — two strategies (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#64-period-sync--two-strategies)
 
 | Attribute | Value |
 |---|---|
@@ -141,6 +149,8 @@ Useful when bus load or master-side CPU competition matters — multi-module fle
 
 ### `drdy_pin`
 
+> **Native protocol:** [01 · Hardware Connection (hardware-connection)](https://github.com/rb-amp/rbamp-docs/blob/main/hardware-connection.md#01--hardware-connection) · [03 · Real-Time Polling (realtime-polling)](https://github.com/rb-amp/rbamp-docs/blob/main/realtime-polling.md#03--real-time-polling)
+
 | Attribute | Value |
 |---|---|
 | Type | `gpio_input_pin_schema` |
@@ -159,6 +169,8 @@ rbamp:
 ---
 
 ### `sensor_class`
+
+> **Native protocol:** [Setting the sensor class and CT model (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#setting-the-sensor-class-and-ct-model) · [4.3 System (0x20..0x25) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#43-system-0x200x25) · [6.2 CT model binding — pure staging + per-channel CMD (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#62-ct-model-binding--pure-staging--per-channel-cmd)
 
 | Attribute | Value |
 |---|---|
@@ -186,6 +198,8 @@ For more on choosing the clamp and family, see [03_sensor_selection.md](03_senso
 ---
 
 ### `ct_model`
+
+> **Native protocol:** [Setting the sensor class and CT model (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#setting-the-sensor-class-and-ct-model) · [6.2 CT model binding — pure staging + per-channel CMD (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#62-ct-model-binding--pure-staging--per-channel-cmd) · [8.6 Fresh-flash provisioning (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#86-fresh-flash-provisioning)
 
 | Attribute | Value |
 |---|---|
@@ -301,6 +315,8 @@ You can read the stored value back from a lambda with `id(meter1).read_start_cur
 
 ### `bidirectional`
 
+> **Native protocol:** [Bidirectional accounting (STANDARD (STD)) (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#bidirectional-accounting-standard-std)
+
 | Attribute | Value |
 |---|---|
 | Type | `bool` |
@@ -321,6 +337,8 @@ rbamp:
 ---
 
 ### `new_address`
+
+> **Native protocol:** [Address change (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#address-change) · [4.5 Address (0x30..0x31) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#45-address-0x300x31) · [6.1 Address change — two-phase commit (production-OK) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#61-address-change--two-phase-commit-production-ok)
 
 | Attribute | Value |
 |---|---|
@@ -371,6 +389,8 @@ Cross-reference: [the runtime address change reference](https://www.rbamp.com/do
 
 ### `fleet_gc_enable` (v1.3 NEW)
 
+> **Native protocol:** [General Call (broadcast at address 0x00) (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#general-call-broadcast-at-address-0x00) · [Multi-module — simultaneous snapshot (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#multi-module--simultaneous-snapshot) · [4.4 Fleet config (0x27..0x2F) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#44-fleet-config-0x270x2f)
+
 | Attribute | Value |
 |---|---|
 | Type | `bool` |
@@ -412,6 +432,8 @@ Cross-reference: [the Fleet Group-Commit reference](https://www.rbamp.com/docs/m
 ---
 
 ### `group_id` (v1.3 NEW)
+
+> **Native protocol:** [General Call (broadcast at address 0x00) (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#general-call-broadcast-at-address-0x00) · [Multi-module — simultaneous snapshot (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#multi-module--simultaneous-snapshot) · [4.4 Fleet config (0x27..0x2F) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#44-fleet-config-0x270x2f)
 
 | Attribute | Value |
 |---|---|
@@ -525,6 +547,8 @@ References the `rbamp:` block this sensor group is bound to.
 
 ### 2.1 Single fields
 
+> **Native protocol:** [Multi-channel current (UI2 / UI3 / UI5 / UI7) (realtime-polling)](https://github.com/rb-amp/rbamp-docs/blob/main/realtime-polling.md#multi-channel-current-ui2--ui3--ui5--ui7) · [4.14 Channel access window (`0x32` + `0x3C..0x3F`) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#414-channel-access-window-0x32--0x3c0x3f)
+
 Used for single-voltage modules (UI1, UI2, UI3, I1, I2, I3 and higher-channel variants). All fields are optional. Mixing them with phased fields (`voltage_a`, `voltage_angle_b`, etc.) raises a validation error.
 
 Slots exist for up to seven current channels: `current` and `current_1` ... `current_6`, and likewise `power`, `energy` and `power_factor` with the same suffixes (`power_3`, `energy_5`, ...). `energy_exported` exists for channels 0..2 (`energy_exported`, `energy_exported_1`, `energy_exported_2`). A slot beyond the channel count the module reports never publishes. `reactive_power` exists for channels 0..2 only (`reactive_power`, `reactive_power_1`, `reactive_power_2`); `reactive_power_3` ... `reactive_power_6` are accepted by the schema but never publish.
@@ -532,6 +556,8 @@ Slots exist for up to seven current channels: `current` and `current_1` ... `cur
 Each field accepts the standard ESPHome `sensor.sensor_schema` subkeys: `name`, `id`, `filters`, `unit_of_measurement`, `accuracy_decimals`, `icon`, and so on.
 
 #### `voltage`
+
+> **Native protocol:** [RT register reference (realtime-polling)](https://github.com/rb-amp/rbamp-docs/blob/main/realtime-polling.md#rt-register-reference) · [4.10 V03 real-time block (0x86..0xBD) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#410-v03-real-time-block-0x860xbd)
 
 | Attribute | Value |
 |---|---|
@@ -578,6 +604,8 @@ current_2:
 
 #### `power` / `power_1` ... `power_6`
 
+> **Native protocol:** [RT register reference (realtime-polling)](https://github.com/rb-amp/rbamp-docs/blob/main/realtime-polling.md#rt-register-reference) · [4.10 V03 real-time block (0x86..0xBD) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#410-v03-real-time-block-0x860xbd)
+
 | Attribute | Value |
 |---|---|
 | Unit | W |
@@ -597,6 +625,8 @@ power:
 ```
 
 #### `energy` / `energy_1` ... `energy_6`
+
+> **Native protocol:** [Master-side algorithm (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#master-side-algorithm) · [7 · Semantics (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#7--semantics)
 
 | Attribute | Value |
 |---|---|
@@ -626,6 +656,8 @@ energy:
 
 #### `energy_exported` / `energy_exported_1` / `energy_exported_2`
 
+> **Native protocol:** [Bidirectional accounting (STANDARD (STD)) (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#bidirectional-accounting-standard-std)
+
 | Attribute | Value |
 |---|---|
 | Unit | Wh |
@@ -654,6 +686,8 @@ power_factor:
 ```
 
 #### `reactive_power` / `reactive_power_1` / `reactive_power_2`
+
+> **Native protocol:** [4.12 V03 Q + period ch0 (0xD0..0xE3, production build) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#412-v03-q--period-ch0-0xd00xe3-production-build)
 
 | Attribute | Value |
 |---|---|
@@ -892,6 +926,8 @@ All validation errors are reported during `esphome compile` with a human-readabl
 
 ## 3. Data flow and timing
 
+> **Native protocol:** [Polling — single module (realtime-polling)](https://github.com/rb-amp/rbamp-docs/blob/main/realtime-polling.md#polling--single-module) · [3. `DATA_VALID` (`0xCE`) never becomes 1 (troubleshooting)](https://github.com/rb-amp/rbamp-docs/blob/main/troubleshooting.md#3-data_valid-0xce-never-becomes-1) · [4 · Register map (production v1.3) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#4--register-map-production-v13)
+
 The conceptual flow of a single `update()` cycle:
 
 ```
@@ -964,6 +1000,8 @@ i2c:
 ---
 
 ## 5. Identity surface (v1.3 NEW) — public C++ methods
+
+> **Native protocol:** [Module variant auto-detection (initialization)](https://github.com/rb-amp/rbamp-docs/blob/main/initialization.md#module-variant-auto-detection) · [3. `DATA_VALID` (`0xCE`) never becomes 1 (troubleshooting)](https://github.com/rb-amp/rbamp-docs/blob/main/troubleshooting.md#3-data_valid-0xce-never-becomes-1) · [Error codes (`REG_ERROR` = `0x02`) (troubleshooting)](https://github.com/rb-amp/rbamp-docs/blob/main/troubleshooting.md#error-codes-reg_error--0x02)
 
 The v1.3 component exposes identity / diagnostic getters that are accessible from a YAML
 `lambda:` and through the template platform. All methods return a `std::string` (for
@@ -1082,6 +1120,8 @@ verification that the fleet config applied.
 ---
 
 ## 7. Native API services (v1.3 NEW) — recovery automations
+
+> **Native protocol:** [Error codes (`REG_ERROR` = `0x02`) (troubleshooting)](https://github.com/rb-amp/rbamp-docs/blob/main/troubleshooting.md#error-codes-reg_error--0x02) · [6.7 Error-state recovery — decision tree (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#67-error-state-recovery--decision-tree)
 
 The v1.3 component does not register services automatically — the YAML does.
 But the public methods `write_clear_error()` / `write_reset()` /

@@ -218,6 +218,8 @@ The flashing tool (`esptool.py` inside) reboots the ESP32 automatically after th
 
 ## Step 5 — What to expect in the boot log
 
+> **Native protocol:** [4.7 CT model verify mirrors (0x51..0x53) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#47-ct-model-verify-mirrors-0x510x53) · [8.10 CT model verify-mirror read-back (post-binding sanity) (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#810-ct-model-verify-mirror-read-back-post-binding-sanity)
+
 Attach `esphome logs` to watch the boot in real time:
 
 ```sh
@@ -367,6 +369,8 @@ sensor:
 ```
 
 ### Synchronization check
+
+> **Native protocol:** [6.3 GC broadcast snapshot — opt-in fleet sync (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#63-gc-broadcast-snapshot--opt-in-fleet-sync) · [8.4 GC broadcast snapshot + witness fallback (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#84-gc-broadcast-snapshot--witness-fallback)
 
 With UI1@0x50 + I2@0x51 + I3@0x52 and `fleet_gc_enable: true`:
 

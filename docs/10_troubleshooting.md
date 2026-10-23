@@ -352,6 +352,8 @@ only when wide dynamic range is required.
 
 ### Period snapshot not valid — energy does not grow
 
+> **Native protocol:** [Calibration and accuracy (troubleshooting)](https://github.com/rb-amp/rbamp-docs/blob/main/troubleshooting.md#calibration-and-accuracy) · [7.5 Failed-snapshot period preservation (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#75-failed-snapshot-period-preservation)
+
 **What you see**:
 
 ```

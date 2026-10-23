@@ -174,6 +174,8 @@ ITER 1 @ 60s: GC tick=1, 3/3 in_sync
 
 ## 2 · Provisioning workflow (virgin → fleet)
 
+> **Native protocol:** [6.5 Provisioning — fresh-flash + SAVE (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#65-provisioning--fresh-flash--save)
+
 **Goal**: the canonical bring-up procedure for new modules, from the factory
 `0x50` to unique fleet addresses. It demonstrates the two-phase address commit
 (v1.3 production-OK) and the required discipline of "one virgin on the bus at a
@@ -1291,6 +1293,8 @@ sensor:
 ---
 
 ## 13 · HA automations on rbAmp sensors
+
+> **Native protocol:** [8.8 Threshold event flow — write threshold → trigger → W1C clear (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#88-threshold-event-flow--write-threshold--trigger--w1c-clear)
 
 ### Load shedding: a relay turns off when a threshold is exceeded
 
