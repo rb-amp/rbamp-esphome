@@ -2,7 +2,7 @@
 
 ![rbAmp register map — page-0 address space (0x00..0xFF)](images/api-register-map.png)
 
-![Atomic period latch — one write closes the period and opens the next](images/period-atomic-latch.png)
+![Atomic period snapshot — one write closes the period and opens the next](images/period-atomic-latch.png)
 
 This chapter is the complete reference for the YAML schema of the `rbamp` external component for ESPHome. If a key is not listed here, it does not exist in the schema.
 
@@ -96,10 +96,10 @@ Cross-reference: [the I²C bus protocol](https://www.rbamp.com/docs/modules-basi
 
 How often `update()` runs. Each call:
 
-1. Sends the latch command and schedules a non-blocking 50 ms timeout for reading the period snapshot (BASIC modules; on STANDARD modules energy comes from the module's own counters, see [`energy_total`](#energy_total--energy_exported_total--energy_net)).
+1. Sends the snapshot command and schedules a non-blocking 50 ms timeout for reading the period snapshot (BASIC modules; on STANDARD modules energy comes from the module's own counters, see [`energy_total`](#energy_total--energy_exported_total--energy_net)).
 2. Checks the status register; if the module is ready, publishes all bound instantaneous sensors.
 
-The 60 s default is reasonable: the module internally updates its period-average power roughly every ~100 ms, but integrating energy on the master side requires a long enough window to be correct. At 60 s and an average load of 60 W, a missed latch loses ≤ 1 Wh.
+The 60 s default is reasonable: the module internally updates its period-average power roughly every ~100 ms, but integrating energy on the master side requires a long enough window to be correct. At 60 s and an average load of 60 W, a missed snapshot loses ≤ 1 Wh.
 
 The minimum allowed value is **`1s`**: the schema rejects anything smaller, and `esphome config` reports a diagnostic.
 Values below 5-10 s offer no benefit for tight synchronization and just clutter
@@ -121,18 +121,18 @@ rbamp:
 | Required | No |
 | Since | v1.4 |
 
-How often the component sends the LATCH command and integrates a Wh sample. When set, decouples the LATCH cycle from the RT-read cadence — `update_interval:` continues to control how often V/I/P/PF/Q registers are read and published, while `latch_interval:` controls how often the period accumulator is snapshotted and Wh is integrated.
+How often the component sends the snapshot command and integrates a Wh sample. When set, decouples the snapshot cycle from the RT-read cadence — `update_interval:` continues to control how often V/I/P/PF/Q registers are read and published, while `latch_interval:` controls how often the period accumulator is snapshotted and Wh is integrated.
 
-Energy integration adds no error of its own beyond the module's active-power accuracy, regardless of the ratio: master-side integration uses the actual wall-clock dt between successive LATCH events, so longer LATCH intervals just produce coarser integration steps.
+Energy integration adds no error of its own beyond the module's active-power accuracy, regardless of the ratio: master-side integration uses the actual wall-clock dt between successive snapshot events, so longer snapshot intervals just produce coarser integration steps.
 
-Must be `>= update_interval` (setting it shorter is rejected at config validation — the extra LATCHes would produce no observable data).
+Must be `>= update_interval` (setting it shorter is rejected at config validation — the extra snapshots would produce no observable data).
 
-When unset, LATCH runs on every `update()` call (v1.3 single-cadence behaviour, backwards-compatible).
+When unset, snapshot runs on every `update()` call (v1.3 single-cadence behaviour, backwards-compatible).
 
 ```yaml
 rbamp:
   update_interval: 3s        # RT V/I/P/PF refreshed every 3 s
-  latch_interval: 60s        # LATCH + Wh integration once a minute
+  latch_interval: 60s        # snapshot + Wh integration once a minute
 ```
 
 Useful when bus load or master-side CPU competition matters — multi-module fleets, ESP8266 hosts (single-core; WiFi ISRs compete for CPU during I²C transactions), or shared I²C buses with other devices.
@@ -376,15 +376,15 @@ Cross-reference: [the runtime address change reference](https://www.rbamp.com/do
 | Type | `bool` |
 | Default | `false` |
 | Required | No |
-| Applies to | BASIC modules with general-call latch support (v1.3+ firmware); ignored with a log line on STANDARD |
+| Applies to | BASIC modules with general-call snapshot support (v1.3+ firmware); ignored with a log line on STANDARD |
 
-Opt-in: enables receipt of the **General-Call latch broadcast** from the master. When
+Opt-in: enables receipt of the **General-Call snapshot broadcast** from the master. When
 the ESP32 emits a 5-byte GC frame to address `0x00`, all modules with `fleet_gc_enable:
-true` (and a matching `group_id:`) atomically latch their period accumulators
+true` (and a matching `group_id:`) atomically take a snapshot of their period accumulators
 at a single wire moment. This delivers **tight synchronization** between
 sub-meters.
 
-**Capability behavior**: at boot the component checks whether the firmware advertises general-call latch. If it does not → warning + skip without apply:
+**Capability behavior**: at boot the component checks whether the firmware advertises general-call snapshot. If it does not → warning + skip without apply:
 
 ```
 [W][rbamp:xxx]: fleet_gc_enable requested but the module does not advertise general-call latch;
@@ -420,7 +420,7 @@ Cross-reference: [the Fleet Group-Commit reference](https://www.rbamp.com/docs/m
 | Required | No |
 | Applies to | BASIC modules; ignored with a log line on STANDARD |
 
-A cluster identifier for **selective** GC latch. The module accepts a GC frame
+A cluster identifier for **selective** GC snapshot. The module accepts a GC frame
 only if the group field in the frame matches this `group_id` **OR** equals
 `0x00` (all-call).
 
@@ -429,9 +429,9 @@ only if the group field in the frame matches this `group_id` **OR** equals
 - **Multi-tenant**: one ESP32 drives several independent clusters of
   modules (e.g. 3 apartments in one panel). Cluster 1 = `group_id: 1`,
   cluster 2 = `group_id: 2`. The master emits a GC frame with group=1 → only
-  cluster 1 latches.
+  cluster 1 takes a snapshot.
 - **Single-tenant**: leave `group_id: 0` (all-call) or set `group_id: 1`
-  as a label — the behavior is identical, all modules latch.
+  as a label — the behavior is identical, all modules take a snapshot.
 
 **Persistence**: written to `REG_GROUP_ID` and saved to flash via
 read-compare-write. Changing it requires a boot.
@@ -455,7 +455,7 @@ rbamp:
 | Required | No |
 | Status | **Deprecated** — replaced by `fleet_gc_enable:` (v1.3+). |
 
-A legacy alias for the General-Call broadcast latch. In v1.3 this key is accepted
+A legacy alias for the General-Call broadcast snapshot. In v1.3 this key is accepted
 by the schema as a no-op (for non-breaking migration from v0.4.0 YAML), but it has
 **no effect**. For new code, use `fleet_gc_enable:` — it is capability-gated
 and works on v1.3 firmware.
@@ -609,7 +609,7 @@ power:
 Accumulated consumed (import) energy in Wh for the channel.
 
 - **STANDARD modules** — the component accumulates the module's own energy counters. Totals survive restarts of both the ESP32 and the module and are monotonic (they do not step back when the module restarts or a counter is reset).
-- **BASIC modules** — computed on the ESP32 from the period-average power returned by the module after each latch:
+- **BASIC modules** — computed on the ESP32 from the period-average power returned by the module after each snapshot:
 
 ```
 E_Wh[ch] += avg_P_W[ch] * master_dt_s / 3600
@@ -879,7 +879,7 @@ cannot compute it without that input.
 | `new_address` ≠ `address` | If they match — `cv.Invalid`. |
 | `address` in the range `0x08..0x77` | `cv.i2c_address` is applied. |
 | `update_interval` ≥ `1s` | Shorter intervals are rejected. |
-| `latch_interval` ≥ `update_interval` | A shorter latch cadence is rejected. |
+| `latch_interval` ≥ `update_interval` | A shorter snapshot cadence is rejected. |
 | `ct_models:` has 1..16 entries | Longer lists are rejected. |
 | `group_id` is 0..255 | Out-of-range values are rejected. |
 | `start_current_ua` is `0` or `10`..`2540` in steps of `10` | Any other value is rejected. |
@@ -902,8 +902,8 @@ instantaneous block (RMS / P / PF / Q)
   ↓ (~100 ms per cycle)
 Atomically publishes the block       update() fires every update_interval (60 s)
 of instantaneous registers            ↓
-  ↓                                 phase 1 — latch:
-                                      write the latch command
+  ↓                                 phase 1 — snapshot:
+                                      write the snapshot command
 Closes the period accumulator,        50 ms timeout (non-blocking)
 opens a new one                       ↓ (main loop keeps running)
   ↓
@@ -922,7 +922,7 @@ opens a new one                       ↓ (main loop keeps running)
                                     Push state to HA over the native API
 ```
 
-> The diagram shows the BASIC latch-based flow. A STANDARD module keeps its own energy counters: on each `update()` the component reads the instantaneous values and the counter snapshot (one coherent transaction) and adds the difference to its running totals, so the latch step is not used for energy.
+> The diagram shows the BASIC snapshot-based flow. A STANDARD module keeps its own energy counters: on each `update()` the component reads the instantaneous values and the counter snapshot (one coherent transaction) and adds the difference to its running totals, so the snapshot step is not used for energy.
 
 **Characteristic timings**:
 
@@ -930,12 +930,12 @@ opens a new one                       ↓ (main loop keeps running)
 |---|---|
 | Internal commit of the instantaneous block by the module | ~100 ms |
 | `update()` call | `update_interval` (60 s by default) |
-| Settle timeout after the latch command | 50 ms (non-blocking) |
+| Settle timeout after the snapshot command | 50 ms (non-blocking) |
 | Save to NVS | Every 5 minutes |
 | Pause between per-byte retries | 5 ms, up to 3 attempts |
 | Flash-write window when writing the model | ~700 ms (the module NACKs the whole time) |
 
-The latch-settle timeout is non-blocking — the cooperative ESPHome scheduler keeps servicing WiFi, the API, and other components during the 50 ms wait. The remaining `update()` phases (reading the instantaneous registers) run immediately after returning from the latch phase.
+The snapshot-settle timeout is non-blocking — the cooperative ESPHome scheduler keeps servicing WiFi, the API, and other components during the 50 ms wait. The remaining `update()` phases (reading the instantaneous registers) run immediately after returning from the snapshot phase.
 
 The warning `[W][component:522]: rbamp took a long time for an operation (XXX ms)` is expected and harmless when it does appear. On v1.3 firmware the component reads the instantaneous-values block via a single burst read (READ auto-increment), so a healthy cycle stays well under 30 ms. The warning surfaces when the burst path falls back to per-register reads (4 transactions per float, up to 36 transactions at 50 kHz, plus retries) — typically due to a marginal bus or legacy firmware without the READ-burst capability.
 
@@ -981,7 +981,7 @@ cached state.
 | `get_std_image_version()` | `uint32_t` | STANDARD only | Running module image version; `0` = unknown or BASIC |
 | `get_phase_sequence_str()` | `std::string` | STANDARD only | "forward"/"reverse"/"abnormal"/"n/a"/"unavailable" |
 | `read_start_current_ua()` | `uint16_t` | STANDARD only | Fresh read of the stored starting current in µA; `65535` = unavailable |
-| `read_gc_tick_received()` | `uint16_t` | `REG_GC_LAST_TICK` (0x58) | last latched tick value from the GC frame |
+| `read_gc_tick_received()` | `uint16_t` | `REG_GC_LAST_TICK` (0x58) | last captured tick value from the GC frame |
 | `get_capability_cached()` | `uint16_t` | cached capability bitmap | the bitmap read at boot, without a bus transaction |
 
 **Caching**: `variant` / `capability` / `uid` / `firmware_version` are read
@@ -1050,21 +1050,21 @@ esphome:
 bool transmit_gc_frame();
 ```
 
-Emits a 5-byte General-Call latch frame to bus address `0x00`. The group byte is the instance's `group_id:` and the tick is an auto-incrementing counter; the method returns `true` when the bus write succeeded. BASIC modules only — on a STANDARD module it logs a warning and does nothing:
+Emits a 5-byte General-Call snapshot frame to bus address `0x00`. The group byte is the instance's `group_id:` and the tick is an auto-incrementing counter; the method returns `true` when the bus write succeeded. BASIC modules only — on a STANDARD module it logs a warning and does nothing:
 
 ```text
 START | 0x00 | A | 0xA5 | A | 0x27 | A | group | A | tick_lo | A | tick_hi | A | STOP
 ```
 
 All modules with `fleet_gc_enable: true` + a matching `group_id:` (or `group_id: 0`)
-latch their period accumulators **synchronously** at a single wire moment. The tick
+take a snapshot of their period accumulators **synchronously** at a single wire moment. The tick
 value is stored by each module for sync verification (`read_gc_tick_received()`).
 
 **Auto-emit**: the component emits a GC frame **automatically** in `update()` if
-`fleet_gc_enable: true` and the firmware advertises general-call latch. A manual emit is needed
+`fleet_gc_enable: true` and the firmware advertises general-call snapshot. A manual emit is needed
 only for extra synchronization (for example, on an HA-side event trigger).
 
-**Capability check**: if the firmware does not advertise general-call latch — warning, no emit.
+**Capability check**: if the firmware does not advertise general-call snapshot — warning, no emit.
 
 ### `fleet_apply_now()` — force re-apply read-compare-write
 
@@ -1103,7 +1103,7 @@ api:
       then:
         - lambda: 'id(mains).write_reset();'
 
-    # Fleet: manual GC latch (beyond the auto-emit in update())
+    # Fleet: manual GC snapshot (beyond the auto-emit in update())
     - service: fleet_latch_now
       then:
         - lambda: 'id(mains).transmit_gc_frame();'   # group = this instance's group_id, tick auto-increments

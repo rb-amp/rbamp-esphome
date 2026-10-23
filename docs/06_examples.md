@@ -79,7 +79,7 @@ external_components:
     components: [rbamp]
 
 # Three rbAmp modules on shared bus, all with fleet_gc_enable + group_id=1
-# for synchronized period latching (tight sync between mains + sub-meters).
+# for synchronized period snapshots (tight sync between mains + sub-meters).
 rbamp:
   - id: mains_meter         # UI1 on the mains feed
     address: 0x50
@@ -158,14 +158,14 @@ ITER 1 @ 60s: GC tick=1, 3/3 in_sync
 ### Notes for use
 
 - **One synchronized loop — the whole system.** On every `update_interval` tick,
-  the ESP32 emits a GC frame to 0x00 → all 3 modules latch their period
+  the ESP32 emits a GC frame to 0x00 → all 3 modules take a snapshot of their period
   accumulators at the same wire moment (validated 3/3 in_sync under load).
 - **`mains_power`** in a heterogeneous fleet = the active power from UI1
   (mains_meter). The sub-meters (I2/I3) are current-only, with no canonical P. In
   the 80% canon, `mains_power` ≈ the total power of all loads (mains_meter covers
   the feed).
 - **Wh on BASIC modules is integrated on the ESP32** against its own clock (the time
-  between latches), so all modules of the fleet share one time base. STANDARD
+  between snapshots), so all modules of the fleet share one time base. STANDARD
   modules keep their own energy counters, which the component accumulates.
 - **MISS-resilient.** If one module goes off-bus (provisioning / power cycle), the
   rest keep working; HA shows "Unavailable" for its entities until it recovers.
@@ -357,7 +357,7 @@ panel) and for precise sub-metering (UI1 mains must match the sum of the
 sub-meter powers to within the duration of a single period).
 
 ```yaml
-# Fleet config — all modules in one group for synchronized latching:
+# Fleet config — all modules in one group for synchronized snapshots:
 rbamp:
   - id: tenant1_mains
     address: 0x50
@@ -442,14 +442,14 @@ moments — for example, by tenant period:
 
 ```yaml
 automation:
-  - alias: "Tenant 1 period latch"
+  - alias: "Tenant 1 period snapshot"
     trigger:
       platform: time_pattern
       seconds: "/60"            # every 60 s
     action:
       - service: esphome.<node>_emit_gc_tenant1
 
-  - alias: "Tenant 2 period latch"
+  - alias: "Tenant 2 period snapshot"
     trigger:
       platform: time_pattern
       seconds: "/15"            # every 15 s (high-resolution tenant)
@@ -552,7 +552,7 @@ sensor:
 the core case — whole-home metering or a single load. The `energy` sensor already
 has `device_class: energy` + `state_class: total_increasing` set, so it goes
 straight into the HA Energy dashboard with no extra setup. The period-metering
-protocol (latch / 50 ms settle / read average power, integrated on the master
+protocol (snapshot / 50 ms settle / read average power, integrated on the master
 clock) is documented in [09 · API reference](09_api_reference.md).
 
 ---
@@ -847,10 +847,10 @@ external_components:
     components: [rbamp]
 
 # Three independent rbamp: blocks — MULTI_CONF = True in the schema.
-# On v1.3 firmware the general-call latch is opt-in via fleet_gc_enable +
+# On v1.3 firmware the general-call snapshot is opt-in via fleet_gc_enable +
 # group_id (capability-gated on the firmware side). Modules in the same
-# group latch in a single transaction, with ~540 µs skew per module. On legacy
-# firmware (v1.0..v1.2) the component falls back to a sequential latch
+# group snapshot in a single transaction, with ~540 µs skew per module. On legacy
+# firmware (v1.0..v1.2) the component falls back to a sequential snapshot
 # and logs an informational line. (The old broadcast_latch: key is still
 # accepted by the schema but has no effect.)
 rbamp:
@@ -952,18 +952,18 @@ integrity at 50 kHz. Cut the pull-up solder jumpers on all three modules and pla
 one external pair of 2.7–3.3 kΩ next to the ESP32 (the 3-module row of the table in
 [04_hardware.md](04_hardware.md#multi-module-bus-primary-topology)).
 
-### Advanced: decoupled LATCH cadence for multi-module fleets *(v1.4+)*
+### Advanced: decoupled snapshot cadence for multi-module fleets *(v1.4+)*
 
-Fleet installations pay the LATCH-cycle cost per module per cycle: on a 3-module bus polling at `update_interval: 10s`, that's 3× the LATCH write + 3× the 50 ms settle window every 10 s — plus the RT-block reads on top. On ESP8266 hosts (single core; WiFi ISRs compete for CPU during I²C transactions) or shared I²C buses hosting other devices, that overhead becomes visible as WiFi glitches or stale readings on non-rbAmp entities.
+Fleet installations pay the snapshot-cycle cost per module per cycle: on a 3-module bus polling at `update_interval: 10s`, that's 3× the snapshot write + 3× the 50 ms settle window every 10 s — plus the RT-block reads on top. On ESP8266 hosts (single core; WiFi ISRs compete for CPU during I²C transactions) or shared I²C buses hosting other devices, that overhead becomes visible as WiFi glitches or stale readings on non-rbAmp entities.
 
-`latch_interval:` (available since v1.4, BASIC modules) decouples the two cadences: RT-block reads (V/I/P/PF/Q) stay at `update_interval:` — the reader still sees fresh values on the dashboard — while the LATCH → snapshot → Wh integration only runs every `latch_interval:`. Integration uses the actual wall-clock time between LATCH events, so a 60 s LATCH interval just produces 60 s-wide (and still correct) integration steps. `latch_interval` must be ≥ `update_interval`.
+`latch_interval:` (available since v1.4, BASIC modules) decouples the two cadences: RT-block reads (V/I/P/PF/Q) stay at `update_interval:` — the reader still sees fresh values on the dashboard — while the snapshot → Wh integration only runs every `latch_interval:`. Integration uses the actual wall-clock time between snapshot events, so a 60 s snapshot interval just produces 60 s-wide (and still correct) integration steps. `latch_interval` must be ≥ `update_interval`.
 
 ```yaml
 rbamp:
   - id: mod_mains
     address: 0x50
     update_interval: 10s     # dashboard: fresh V/I/P/PF every 10 s
-    latch_interval: 60s      # bus: LATCH + Wh integration once a minute
+    latch_interval: 60s      # bus: snapshot + Wh integration once a minute
     ct_models: [SCT_013_050, SCT_013_030, SCT_013_030]
     fleet_gc_enable: true
     group_id: 1
@@ -976,7 +976,7 @@ rbamp:
     group_id: 1
 ```
 
-Bus-load reduction vs the same fleet without `latch_interval:`: at `update_interval: 10s`, each module contributes ~15 ms of RT read + ~65 ms of LATCH+settle per cycle → ~80 ms per module per cycle. With `latch_interval: 60s`, the LATCH+settle fires only once a minute → RT reads stay cheap every 10 s + one short LATCH burst every 60 s, roughly a 3× lower average bus duty. Larger fleets see proportionally larger savings.
+Bus-load reduction vs the same fleet without `latch_interval:`: at `update_interval: 10s`, each module contributes ~15 ms of RT read + ~65 ms of snapshot+settle per cycle → ~80 ms per module per cycle. With `latch_interval: 60s`, the snapshot+settle fires only once a minute → RT reads stay cheap every 10 s + one short snapshot burst every 60 s, roughly a 3× lower average bus duty. Larger fleets see proportionally larger savings.
 
 When to omit `latch_interval:`: single-module deployments on ESP32 hosts where the baseline duty isn't costing anything — the v1.3 single-cadence default is simpler and equally correct.
 

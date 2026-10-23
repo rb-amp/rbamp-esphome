@@ -66,7 +66,7 @@ All modules live on a **single I²C bus** of the ESP32 — each with its own add
 
 ![One rbAmp module on the mains feed and one per sub-load share a single I²C bus to the master, each clamp on the L wire of its branch.](images/fleet-topology-mains-plus-subloads.png)
 
-In this scenario the ESP32 is the sole master: it emits a shared **General-Call latch** broadcast when `fleet_gc_enable: true`, and all modules atomically start a new accumulation period on a single wire moment. This gives **tight synchronization** between sub-meters — channel sums match feed sums to within the duration of a single period.
+In this scenario the ESP32 is the sole master: it emits a shared **General-Call snapshot** broadcast when `fleet_gc_enable: true`, and all modules atomically start a new accumulation period on a single wire moment. This gives **tight synchronization** between sub-meters — channel sums match feed sums to within the duration of a single period.
 
 A single-module configuration (UI1 on mains, no sub-meters) is the minimal case, not the canon. On v1.3 both are valid; the multi-module setup is recommended right in the documentation's first chapter, because 80% of field deployments are exactly that.
 
@@ -96,11 +96,11 @@ All instantaneous quantities are updated by the module autonomously at a ~100 ms
 - **NVS persistence of Wh** — the total energy is written to the ESP32 flash every 5 minutes (and on a clean shutdown, so a reboot or OTA does not lose the last interval) and restored **before** the first `publish_state`. Home Assistant never sees a momentary zero after a reboot and never interprets it as a counter reset.
 - **Declarative sensor configuration** — two YAML lines (`sensor_class:` + `ct_models:` for UI3, or `ct_model:` for UI1) pin the family and CT model for each channel. The factory coefficients are loaded by the module automatically — no calibration steps in the boot sequence.
 - **Polling schedule** via `PollingComponent::update()` with a configurable `update_interval` (60 s by default).
-- **Decoupled RT-read and LATCH cadences** *(v1.4+)* — the optional `latch_interval:` key lets the LATCH → snapshot → Wh integration cycle run at its own cadence while `update_interval:` continues to control how often the ESPHome component reads the real-time V/I/P/PF/Q block. Typical use: `update_interval: 3s` + `latch_interval: 60s` — fresh dashboard values every 3 s, LATCH bus load only once a minute. Energy integration adds no error of its own beyond the module's active-power accuracy (master-side integration uses the actual wall-clock dt between LATCH events).
+- **Decoupled RT-read and snapshot cadences** *(v1.4+)* — the optional `latch_interval:` key lets the snapshot → Wh integration cycle run at its own cadence while `update_interval:` continues to control how often the ESPHome component reads the real-time V/I/P/PF/Q block. Typical use: `update_interval: 3s` + `latch_interval: 60s` — fresh dashboard values every 3 s, snapshot bus load only once a minute. Energy integration adds no error of its own beyond the module's active-power accuracy (master-side integration uses the actual wall-clock dt between snapshot events).
 - **NACK resilience** — a three-layer discipline is implemented: 50 kHz by default, per-byte retry, and a sanity filter for NaN/Inf. Details below.
 - **One-shot address provisioning** — the `new_address:` key changes the module's I²C address in a single boot cycle. On v1.3 firmware it works in **production mode without factory-provisioning gating** (two-phase address commit, detected automatically). Handy for bulk configuration of a batch of devices after they are installed in a panel.
 - **Multi-module bus** — `MULTI_CONF = True` lets you declare several `rbamp:` blocks on one ESP32 and poll them all in turn.
-- **Fleet General-Call sync (v1.3)** — the `fleet_gc_enable: true` key enables reception of the GC latch broadcast from the ESP32. All modules with this flag set and a matching `group_id:` start a new period simultaneously. Capability-gated; on legacy firmware it logs a warning and skips without applying. BASIC modules only.
+- **Fleet General-Call sync (v1.3)** — the `fleet_gc_enable: true` key enables reception of the GC snapshot broadcast from the ESP32. All modules with this flag set and a matching `group_id:` start a new period simultaneously. Capability-gated; on legacy firmware it logs a warning and skips without applying. BASIC modules only.
 - **Identity surface (v1.3)** — the public methods `get_variant_str()` / `get_capability_hex()` / `get_uid_hex()` / `get_firmware_version()` / `get_last_error_str()` are accessible from `lambda:` and through a template `text_sensor.platform: template`. They let you surface the module's current variant (UI1/UI3/I2…), capability bitmap, UID, and firmware version in HA.
 - **Read-compare-write boot (v1.3)** — `sensor_class:` / `ct_model:` / `ct_models:` are written to flash only if the requested value differs from the stored one. Boot-time config writeback drops from ~2.8 s (UI3 cold install) to **~0 ms** on a stable configuration. The old advice to "remove `ct_model:` from the YAML after verifying" is obsolete — the config is idempotent.
 - **Factory-calibration protection (v1.8.1+)** — on a module calibrated as a pair with its own fitted sensor (`WIRED_CT` / `BUILTIN_CT`) a class or model change from YAML is refused with a log line. The service option `ct_model_force: true` overrides it deliberately.
@@ -114,11 +114,11 @@ The measurement engine lives in the module; the ESP32 acts as a bridge to HA. On
 
 ## Data flow within a single `update()`
 
-The description below is the BASIC flow. On a STANDARD module the instantaneous branch is the same; the period branch is replaced by one coherent read of the module's energy counters, whose difference to the previous snapshot is added to the running totals (no latch step).
+The description below is the BASIC flow. On a STANDARD module the instantaneous branch is the same; the period branch is replaced by one coherent read of the module's energy counters, whose difference to the previous snapshot is added to the running totals (no snapshot step).
 
 Every `update()` call on a BASIC module runs two parallel branches:
 
-![Module measurement windows running on their own clock, and the ESP32 update() steps: latch, wait 50 ms, snapshot, RT read, publish.](images/esphome-dataflow-timings.png)
+![Module measurement windows running on their own clock, and the ESP32 update() steps: snapshot command, wait 50 ms, read the snapshot, RT read, publish.](images/esphome-dataflow-timings.png)
 
 
 ### Branch 1 — instantaneous values (RT block)
@@ -133,14 +133,14 @@ On v1.3 firmware the instantaneous-values block (U / I / P / PF / Q for all decl
 ### Branch 2 — period metering (energy accumulation)
 
 1. Record `t_latch = millis()`.
-2. Send the latch command — it closes the current accumulation period and immediately opens the next. A single transaction both closes and opens; no sample is lost at the boundary.
+2. Send the snapshot command — it closes the current accumulation period and immediately opens the next. A single transaction both closes and opens; no sample is lost at the boundary.
 3. After 50 ms (a non-blocking timeout), read the valid flag. If the module has not finished integrating (polling faster than the integration period, or a stale snapshot), skip — the next cycle will pick up the missed interval.
 4. Read the average active power over the period for each channel.
 5. `E_Wh[ch] += avg_p_W[ch] × (t_latch − last_latch_ms_) / 3_600_000`.
 6. Update `last_latch_ms_` only after success on all channels.
 7. Save to NVS if more than 5 minutes have passed since the last save.
 
-The first latch after boot resets the module's accumulator and calibrates the master clock; its result is discarded via the `primed_` flag.
+The first snapshot after boot resets the module's accumulator and calibrates the master clock; its result is discarded via the `primed_` flag.
 
 ## NVS energy persistence
 
@@ -211,7 +211,7 @@ This component is one member of the cross-platform family of rbAmp client librar
 | **ESP-IDF** | [`rb-amp/rbamp-esp-idf`](https://github.com/rb-amp/rbamp-esp-idf) |
 | **Python (CPython + MicroPython)** | [`rb-amp/rbamp-python`](https://github.com/rb-amp/rbamp-python) |
 
-All libraries use the same wire conventions — byte-at-a-time writes with optional READ-burst, the same period-metering latch/snapshot state machine, the same SKU variant detection at boot, and the same `REG_ERROR` codes. Code from any of these platforms ports to another by a mechanical syntax translation — the protocol logic is identical. See [09 · API reference](09_api_reference.md) for the canonical register map.
+All libraries use the same wire conventions — byte-at-a-time writes with optional READ-burst, the same period-metering snapshot state machine, the same SKU variant detection at boot, and the same `REG_ERROR` codes. Code from any of these platforms ports to another by a mechanical syntax translation — the protocol logic is identical. See [09 · API reference](09_api_reference.md) for the canonical register map.
 
 ## Supported SKUs
 

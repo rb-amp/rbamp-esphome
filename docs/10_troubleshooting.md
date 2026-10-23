@@ -66,7 +66,7 @@ The ESP32 sent the address phase to 0x50 (or another address from `address:`) an
 
 **How to diagnose**:
 
-1. If the entry appears once at boot (in the first 30 s after power-up) and then disappears, this is normal. The module needs one commit cycle (~100 ms) to set the READY bit after power-up. The startup latch in `setup()` also produces one skipped cycle.
+1. If the entry appears once at boot (in the first 30 s after power-up) and then disappears, this is normal. The module needs one commit cycle (~100 ms) to set the READY bit after power-up. The startup snapshot in `setup()` also produces one skipped cycle.
 
 2. If the message streams continuously after warm-up, the module may be stuck. Check for repeated `ct_model:` / `ct_models:` entries (for example, a key left in the YAML that is written on every boot, producing a permanent flash-write window).
 
@@ -92,7 +92,7 @@ The ESP32 sent the address phase to 0x50 (or another address from `address:`) an
 
 On v1.3 firmware, READ auto-increment is supported for the instantaneous-values block (the contiguous range covering U / I / P / PF / Q for all declared channels). The component issues a single burst read for that block — one address phase followed by ~36 data bytes — which costs ≈ 8–10 ms of wire time at 50 kHz. WRITE auto-increment is **not** supported, so per-register writes (CT model staging, sensor class, address commit) still go byte-at-a-time. If the burst read fails (NACK partway through, capability bit not set on legacy firmware), the component falls back to per-register reads (4 transactions per float, up to 36 transactions ≈ 90 ms at 50 kHz). With the per-byte retry triple (up to 3 × 5 ms gap on a NACK-heavy cycle) the worst-case fallback path is normally 300–450 ms — which is what produces this warning when it appears.
 
-The latch-settle (`set_timeout("rbamp_period", 50, ...)`) is **non-blocking** — `update()` yields control to the scheduler while the 50 ms elapse. The warning reflects the wall-clock time of the whole blocking instantaneous-values read, not WiFi or API starvation.
+The snapshot-settle (`set_timeout("rbamp_period", 50, ...)`) is **non-blocking** — `update()` yields control to the scheduler while the 50 ms elapse. The warning reflects the wall-clock time of the whole blocking instantaneous-values read, not WiFi or API starvation.
 
 **No user action is required**. The warning is cosmetic; HA sensors update correctly. On healthy v1.3 modules the burst-read path normally stays under 30 ms and the warning does not fire at all.
 
@@ -109,12 +109,12 @@ The latch-settle (`set_timeout("rbamp_period", 50, ...)`) is **non-blocking** �
 [W][rbamp:xxx]: Failed to read PERIOD_AVG_P[1]
 ```
 
-**What it means**: after the latch command and the 50 ms wait, the component could not read the period-average power register for channel N after three retries. The energy accumulator for that channel is **not updated** in this cycle.
+**What it means**: after the snapshot command and the 50 ms wait, the component could not read the period-average power register for channel N after three retries. The energy accumulator for that channel is **not updated** in this cycle.
 
 The most common causes:
 
-1. **Flash-write blackout**. The module is writing a CT model (triggered by `ct_model:` or `ct_models:` at boot) or saving a new address. The window is ~700 ms; if the 50 ms latch-settle lands in it, the read times out.
-2. **Missed latch under heavy polling**. Under heavy back-to-back I²C polling the module side may miss a latch. The snapshot stays empty, but the valid flag will be 0 — the component skips integration with the message "Period snapshot not yet valid; keeping previous integration window". The warning fires only when the valid flag is set but the register read still failed.
+1. **Flash-write blackout**. The module is writing a CT model (triggered by `ct_model:` or `ct_models:` at boot) or saving a new address. The window is ~700 ms; if the 50 ms snapshot-settle lands in it, the read times out.
+2. **Missed snapshot under heavy polling**. Under heavy back-to-back I²C polling the module side may miss a snapshot. The snapshot stays empty, but the valid flag will be 0 — the component skips integration with the message "Period snapshot not yet valid; keeping previous integration window". The warning fires only when the valid flag is set but the register read still failed.
 3. **Transient NACK exhaustion**. All three retries on at least one of the float's four bytes failed. Rare at 50 kHz (< 1% of cycles); more frequent at 100 kHz.
 
 **What happens to the energy**: on a warning, `last_latch_ms_` is **not** updated. On the next successful cycle, `dt_ms` covers both the missed window and the new one — energy recovers, assuming a roughly stable load over the interval. This is an acceptable small inaccuracy.
@@ -360,13 +360,13 @@ only when wide dynamic range is required.
 
 The `energy` sensor in Home Assistant shows a constant (or stays at 0 Wh after boot), even though power reads correctly.
 
-**What it means**: the period-snapshot valid flag was 0 when the component checked it 50 ms after the latch command. The module has not yet committed a valid period snapshot.
+**What it means**: the period-snapshot valid flag was 0 when the component checked it 50 ms after the snapshot command. The module has not yet committed a valid period snapshot.
 
 Normal causes:
 
-1. **First latch after boot**. The startup latch in `setup()` always discards its result — the module accumulator is reset on the first latch command. The second latch (one `update_interval` after boot) is the first one that integrates. Energy starts accumulating after the first full `update_interval` from boot.
-2. **Module cold start**. The module needs at least one ~100 ms commit cycle for any data in the period accumulator. If the first latch falls earlier, the valid flag is 0.
-3. **Missed latch under heavy polling**. Under heavy I²C load the module side may miss a latch. The snapshot stays empty; the next latch should succeed.
+1. **First snapshot after boot**. The startup snapshot in `setup()` always discards its result — the module accumulator is reset on the first snapshot command. The second snapshot (one `update_interval` after boot) is the first one that integrates. Energy starts accumulating after the first full `update_interval` from boot.
+2. **Module cold start**. The module needs at least one ~100 ms commit cycle for any data in the period accumulator. If the first snapshot falls earlier, the valid flag is 0.
+3. **Missed snapshot under heavy polling**. Under heavy I²C load the module side may miss a snapshot. The snapshot stays empty; the next snapshot should succeed.
 
 If the entry fires on **every** `update()` cycle indefinitely (not just the first two), the module may be in a state where the period accumulator never commits. Power-cycling the module clears this state.
 
@@ -414,7 +414,7 @@ If the restored value is noticeably lower than expected, the last 5-minute NVS s
 
 **What you see**: the `energy` sensor in HA reads noticeably lower (for example 10–20%) than a reference smart meter or the utility meter over the same period.
 
-**What it means**: on BASIC modules the component integrates the period-average power over the ESP32-side time between latch commands. On STANDARD modules it accumulates the module's own energy counters.
+**What it means**: on BASIC modules the component integrates the period-average power over the ESP32-side time between snapshot commands. On STANDARD modules it accumulates the module's own energy counters.
 
 If the energy reads low, look among these:
 

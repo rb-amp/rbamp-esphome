@@ -12,7 +12,7 @@ The ESPHome component works with both module lines from **one YAML**: the schema
 
 The firmware keeps **unidirectional consumption metering**: the average active power over a period can never be negative — reverse segments within the window are zeroed before integration. Behaviorally this resembles a classic mechanical disc meter.
 
-- Energy is integrated on the ESP32 from the period-average power the module returns after each latch, and saved to the ESP32 flash (NVS).
+- Energy is integrated on the ESP32 from the period-average power the module returns after each snapshot, and saved to the ESP32 flash (NVS).
 - The `energy_exported` sensor exists in the YAML schema (for config compatibility), but on BASIC it always publishes `0`.
 - The grand-total energy sensors (`energy_total`, `energy_exported_total`, `energy_net`, `reactive_energy`, `reactive_energy_exported`) validate but never publish on BASIC.
 - Typical applications: apartments without on-site generation, sub-metering of specific loads (water heaters, motors, household appliances, HVAC).
@@ -127,18 +127,18 @@ Accepted on both module lines. On firmware v1.3+ the address change is **product
 
 Execution flow over a single boot: the component polls the current address, writes the new address and saves it to flash, resets the module, and verifies the response at the new address. After success, update the YAML to `address: 0x51` and remove `new_address:`. If the component finds that the old address is silent while the new one responds, it adapts automatically with a warning in the log (in case a previous boot already applied the change).
 
-### `fleet_gc_enable:` / `group_id:` — synchronous latch for a multi-module bus
+### `fleet_gc_enable:` / `group_id:` — synchronous snapshot for a multi-module bus
 
 ```yaml
 rbamp:
   - id: meter1
     fleet_gc_enable: true   # v1.3 production path — recommended
-    group_id: 1             # cluster id (modules in the same group latch together)
+    group_id: 1             # cluster id (modules in the same group snapshot together)
 ```
 
 When enabled, the component sends a 5-byte general-call frame to the I²C broadcast address — synchronizing the period snapshot across all modules in the same `group_id` in a single transaction.
 
-On v1.3 BASIC firmware the general-call latch is **opt-in** and capability-gated. The component checks at boot whether the firmware advertises it and enables the path automatically when both the YAML key and the firmware agree. On legacy firmware (v1.0..v1.2) it is not advertised; the component falls back to a sequential latch for each module individually and logs an informational line. On a STANDARD module these keys are ignored with a log line.
+On v1.3 BASIC firmware the general-call snapshot is **opt-in** and capability-gated. The component checks at boot whether the firmware advertises it and enables the path automatically when both the YAML key and the firmware agree. On legacy firmware (v1.0..v1.2) it is not advertised; the component falls back to a sequential snapshot for each module individually and logs an informational line. On a STANDARD module these keys are ignored with a log line.
 
 The legacy `broadcast_latch:` key is still accepted by the schema for backward compatibility but has **no effect**. Use `fleet_gc_enable:` + `group_id:`.
 
@@ -172,7 +172,7 @@ Requires a 10 kΩ pull-up on the master GPIO to 3.3 V (the output is open-drain;
 |---|:---:|:---:|---|
 | `address:` | yes | yes | — |
 | `update_interval:` | yes | yes | Minimum `1s` |
-| `latch_interval:` | yes | n/a | Decouples the latch/energy cadence from the read cadence; STANDARD reads its counters on every `update()` |
+| `latch_interval:` | yes | n/a | Decouples the snapshot/energy cadence from the read cadence; STANDARD reads its counters on every `update()` |
 | `drdy_pin:` | yes | yes | Optional, needs a 10 kΩ pull-up; not used as a read trigger |
 | `topology:` | yes | not needed | Informational hint |
 | `sensor_class:` | yes | yes | Not rewritten when equal; refused on factory-paired modules |

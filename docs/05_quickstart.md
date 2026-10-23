@@ -308,7 +308,7 @@ rbamp:
     address: 0x50
     sensor_class: SCT_013
     ct_model: SCT_013_030
-    fleet_gc_enable: true       # NEW v1.3 — capability-gated GC latch
+    fleet_gc_enable: true       # NEW v1.3 — capability-gated GC snapshot
     group_id: 1                  # cluster id
 
   - id: boiler_meter             # I2 sub-meter, address 0x51 after provisioning
@@ -316,7 +316,7 @@ rbamp:
     sensor_class: SCT_013
     ct_models: [SCT_013_020, SCT_013_010]   # 20A boiler + 10A washing machine
     fleet_gc_enable: true
-    group_id: 1                  # same group → synchronized latching
+    group_id: 1                  # same group → synchronized snapshots
 
   - id: panel_meter              # I3 sub-meter, address 0x52
     address: 0x52

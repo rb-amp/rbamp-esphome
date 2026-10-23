@@ -187,4 +187,4 @@ What the component promises not to break without warning, and what it may:
 
 1. Update `ref:`.
 2. `SCT_013_100` (code 5) and `SCT_013_060` (code 7) are accepted.
-3. Optionally add `fleet_gc_enable:` / `group_id:` for synchronized latching in a multi-module deployment (BASIC modules).
+3. Optionally add `fleet_gc_enable:` / `group_id:` for synchronized snapshots in a multi-module deployment (BASIC modules).

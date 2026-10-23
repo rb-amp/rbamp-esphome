@@ -13,7 +13,7 @@ STANDARD (STD) = import and export metered separately, energy kept in counters i
 >   module logs a line starting `STD module:`; a BASIC module logs `Topology:` and no `STD module:` line.
 > - **CT clamp** — the split-core current sensor that clips around one wire; its rating (e.g. 30 A)
 >   is printed on the clamp label.
-> - **Period / latch** — the module closes a measuring period on a latch command; the component uses the
+> - **Period / snapshot** — the module closes a measuring period on a snapshot command; the component uses the
 >   period average to add up energy (BASIC) or reads the module's counters (STANDARD (STD)).
 > - **NVS** — the ESP32's flash storage; energy is saved there so it survives a reboot.
 > - **DRDY** — optional "data ready" pin of the module; you can leave it unconnected.
@@ -35,7 +35,7 @@ STANDARD (STD) = import and export metered separately, energy kept in counters i
 - **Energy persistence** — energy is saved to the ESP32 NVS every 5 minutes and on a clean shutdown,
   and restored before the first publish, so Home Assistant never sees a false counter reset.
 - **Multi-module fleet** — declare several `rbamp:` blocks on one ESP32; on BASIC modules the optional
-  **General-Call latch** (`fleet_gc_enable:` + `group_id:`) synchronizes accumulation across sub-meters.
+  **General-Call snapshot** (`fleet_gc_enable:` + `group_id:`) synchronizes accumulation across sub-meters.
 - **Safe configuration** — two-phase I²C address change (`new_address:`), read-compare-write boot
   writeback (an equal value is never written), schema-validated keys (`update_interval` >= 1 s,
   `start_current_ua`, `ct_model_force` only with a model key).
@@ -154,7 +154,7 @@ MIT — see [LICENSE](LICENSE).
 - **v1.8.0** — on-device cumulative energy for the 16-bit line (grand-total sensors, µWh/µvarh
   with coarse fallback, `start_current_ua:`, voltage angles + phase sequence on 3φ).
 - **v1.7.0** — 16-bit register-map module line autodetected on the same YAML; energy via
-  device latch snapshots; restart auto-recovery; NVS flush on clean shutdown.
+  device snapshots; restart auto-recovery; NVS flush on clean shutdown.
 - **v1.6.0** — per-channel `ct_models:` for all channels (0..15), sensor-model registry, persist
   fix (CT model binding now survives reboot on production modules). Firmware: v1.4.18+.
 - **v1.5.0** — UI5/UI7 senior-SKU support, expanded per-channel period energy.
