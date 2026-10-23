@@ -28,7 +28,7 @@ This Code applies to:
 
 ## Enforcement
 
-Reports: **conduct@rbamp.com** (or hello@rbamp.com if conduct@ alias not yet active)
+Reports: **info@rbamp.com**
 
 We will:
 1. Review reports within 72 hours
