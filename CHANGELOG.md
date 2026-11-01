@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-11-01
+
+### Added
+- **Snapshot banks** (`period_banks:`) for modules that advertise them (16-bit line, image
+  0x7E and later): per-period average power, energy, peaks and period length on any of the
+  module's eight banks, latched on an `interval:` and/or by the new `rbamp.latch_bank` action.
+  Period energy values are per-period (`state_class: measurement`), not meters. The first
+  latch after boot or a module restart only starts the period. Example:
+  `example/std_banks.yaml`.
+- Host tests for the bank logic: `tests/host/test_std_bank.cpp` (plain `g++`, no framework).
+- Sensor-model registry: codes 11 (50 A, 33 Ω) and 13 (100 A, 20 Ω) are now characterized and
+  accepted without the "reserved" hint.
+
+### Fixed
+- On firmware 1.4.22 and later a factory-paired module (class `WIRED_CT` / `BUILTIN_CT`) refuses
+  class and model writes in normal operation, even with `ct_model_force: true` (force works in
+  factory mode only). The component now reports "factory-paired module: configuration locked"
+  instead of a generic parameter error, and a refused single `ct_model:` write is no longer
+  persisted or followed by the rating correction.
+
 ## [1.9.0] — 2026-10-21
 
 **Public releases resume with this version; intermediate versions were

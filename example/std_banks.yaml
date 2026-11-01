@@ -1,0 +1,93 @@
+# STD snapshot banks — master-timed periods on a 16-bit-map module.
+#
+# The module keeps eight independent period banks (capability "snapshot
+# banks", image 0x7E and later). Each `period_banks:` entry below latches its
+# bank on its own cadence and/or from the `rbamp.latch_bank` action, and
+# publishes the period's averages, peaks and energy. A period is the time
+# between two latches of the same bank, measured by the ESP32's clock.
+#
+# Period energy values are PERIOD values (Wh used in that period), not
+# meters — use `energy_total` (module counters) for the running total.
+#
+# On a module without snapshot banks the entries stay unavailable and the
+# log says so once at boot.
+
+esphome:
+  name: rbamp-banks
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 50kHz
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [rbamp]
+
+rbamp:
+  id: meter
+  address: 0x50
+  update_interval: 10s
+  period_banks:
+    # Hourly bank, latched automatically.
+    - bank: 1
+      interval: 1h
+      power:
+        name: "Hour average power"
+      energy:
+        name: "Hour energy"
+      energy_exported:
+        name: "Hour exported energy"
+      max_power:
+        name: "Hour peak power"
+      max_current:
+        name: "Hour peak current"
+      max_voltage:
+        name: "Hour max voltage"
+      min_voltage:
+        name: "Hour min voltage"
+      period_length:
+        name: "Hour period length"
+      channels:                      # optional: one entry per current channel
+        - power:
+            name: "Hour average power ch0"
+          energy:
+            name: "Hour energy ch0"
+    # Manual bank: latched by the button below (or any automation).
+    - bank: 2
+      power:
+        name: "Since last press average power"
+      energy:
+        name: "Since last press energy"
+      period_length:
+        name: "Since last press length"
+
+sensor:
+  - platform: rbamp
+    rbamp_id: meter
+    voltage:
+      name: "Mains voltage"
+    current:
+      name: "Current"
+    power:
+      name: "Power"
+    energy_total:
+      name: "Energy total"
+
+button:
+  - platform: template
+    name: "Latch bank 2"
+    on_press:
+      - rbamp.latch_bank:
+          id: meter
+          bank: 2

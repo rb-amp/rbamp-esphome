@@ -313,9 +313,59 @@ You can read the stored value back from a lambda with `id(meter1).read_start_cur
 
 ---
 
+### `period_banks`
+
+| Attribute | Value |
+|---|---|
+| Type | list of bank entries |
+| Entries per list | 1..8, each `bank:` (0..7) listed once |
+| Default | None |
+| Required | No |
+| Applies to | STANDARD modules that advertise snapshot banks (image 0x7E and later); on any other module the entries stay unavailable and the log says so once at boot |
+
+The module keeps eight independent snapshot banks. Each entry measures one **period** — the time between two latches of the same bank, timed by the ESP32's clock — and publishes the period's averages, peaks and energy. Use it for "energy per hour", "peak current since the last press" and similar questions that the running totals do not answer.
+
+| Key | Meaning |
+|---|---|
+| `bank` | Bank number 0..7. Bank 0 is free on modules with on-device energy counters; on a module without counters the component uses bank 0 itself and the entry is ignored with a warning. |
+| `interval` | Optional automatic latch cadence, at least `1s`. Without it the bank is latched only by the `rbamp.latch_bank` action. |
+| `power`, `reactive_power`, `apparent_power` | Average over the period. |
+| `energy`, `energy_exported` | Wh imported / exported **in the period** (not meters — they carry `state_class: measurement`). |
+| `max_power`, `max_current`, `max_voltage`, `min_voltage` | Extremes inside the period. |
+| `period_length` | The period length in seconds, as measured by the ESP32. |
+| `channels` | Optional list, one entry per current channel (first entry = channel 0), each with `power`, `energy`, `energy_exported`. |
+
+The first latch of a bank after boot, or after the module restarts, only starts the period; its values are dropped and sensors publish from the next latch on. Latches of different banks are kept at least 150 ms apart.
+
+```yaml
+rbamp:
+  id: meter1
+  period_banks:
+    - bank: 1
+      interval: 1h
+      power: {name: "Hour average power"}
+      energy: {name: "Hour energy"}
+      max_current: {name: "Hour peak current"}
+    - bank: 2                    # latched by hand
+      energy: {name: "Energy since last press"}
+      period_length: {name: "Since last press, s"}
+
+button:
+  - platform: template
+    name: "Latch bank 2"
+    on_press:
+      - rbamp.latch_bank:
+          id: meter1
+          bank: 2
+```
+
+A complete example is in [`example/std_banks.yaml`](../example/std_banks.yaml).
+
+---
+
 ### `bidirectional`
 
-> **Native protocol:** [Bidirectional accounting (STANDARD (STD)) (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#bidirectional-accounting-standard-std)
+> **Native protocol:** [Bidirectional accounting (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#bidirectional-accounting)
 
 | Attribute | Value |
 |---|---|
@@ -656,7 +706,7 @@ energy:
 
 #### `energy_exported` / `energy_exported_1` / `energy_exported_2`
 
-> **Native protocol:** [Bidirectional accounting (STANDARD (STD)) (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#bidirectional-accounting-standard-std)
+> **Native protocol:** [Bidirectional accounting (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#bidirectional-accounting)
 
 | Attribute | Value |
 |---|---|
@@ -918,6 +968,7 @@ cannot compute it without that input.
 | `group_id` is 0..255 | Out-of-range values are rejected. |
 | `start_current_ua` is `0` or `10`..`2540` in steps of `10` | Any other value is rejected. |
 | `ct_model_force: true` requires `ct_model:` or `ct_models:` | Rejected on its own. |
+| `period_banks:` — each `bank` once, `interval` ≥ `1s` | A duplicate bank, a bank outside 0..7 or a shorter interval is rejected. |
 | CT model code valid for the pinned `sensor_class` | A code not allowed for the class is rejected with the list of allowed values. |
 
 All validation errors are reported during `esphome compile` with a human-readable message pointing at the offending key. There is no need to flash hardware to find a configuration error.

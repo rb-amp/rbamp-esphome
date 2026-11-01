@@ -94,7 +94,7 @@ static constexpr uint8_t REG_ZC_OFFSET           = 0x4E;  // u16 (U-variants onl
 // ---- Identity / capability --------------------------------------------------
 static constexpr uint8_t REG_PRODUCT_ID          = 0x54;  // 0x01=rbAmp sensor, 0x02=rbDimmer
 static constexpr uint8_t REG_HW_VARIANT          = 0x55;  // 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3, 7=UI5, 8=UI7 (v1.5 firmware bd2ad8e)
-static constexpr uint8_t REG_FW_TIER             = 0x56;  // bits0-1: 0=BASIC,1=STANDARD,2=PRO; bit2=bidir; bit3=LUT-cal
+static constexpr uint8_t REG_FW_TIER             = 0x56;  // bits0-1: 0=BASIC,1=STANDARD (2 reserved); bit2=bidir; bit3=LUT-cal
 static constexpr uint8_t REG_CAPABILITY          = 0x57;  // u16 feature bitmap
 static constexpr uint8_t REG_UID                 = 0x5C;  // 96-bit (12 bytes)
 static constexpr uint8_t REG_LABEL               = 0x68;  // 8 bytes ASCII zero-padded

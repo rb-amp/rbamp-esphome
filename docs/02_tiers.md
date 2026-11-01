@@ -34,10 +34,6 @@ Keys that exist only for the BASIC module line (`fleet_gc_enable:`, `group_id:`,
 
 ![Energy accounting on BASIC (master integrates the period average power) versus STANDARD (master reads the module's cumulative counters).](images/energy-basic-vs-std.png)
 
-### PRO
-
-PRO is not implemented; the component has no PRO-specific keys.
-
 ## Capability Matrix
 
 | Capability | BASIC | STANDARD |

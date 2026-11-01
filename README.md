@@ -60,7 +60,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/rb-amp/rbamp-esphome
-      ref: v1.9.0
+      ref: v1.9.1
     components: [rbamp]
 ```
 
@@ -158,6 +158,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+- **v1.9.1** — STD snapshot banks (`period_banks:`, `rbamp.latch_bank` action) with per-period
+  power / energy / peaks; CT registry codes 11 (50 A) and 13 (100 A); clear "configuration locked"
+  message for factory-paired modules on firmware 1.4.22+. See [CHANGELOG.md](CHANGELOG.md).
 - **v1.9.0** — SCT rating-switch correction: switching `ct_model:` on an SCT module keeps the
   factory per-unit accuracy (scales from the applied gain; firmware 1.4.20+ does it on-device and
   is detected automatically). Public releases resume with this version; it includes the 1.7.x and

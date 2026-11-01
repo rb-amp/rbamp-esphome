@@ -20,7 +20,7 @@ static const char *const TAG = "rbamp";
 // here; add them to rbamp_const.h instead so cross-library drift stays
 // O(1)-detectable.
 
-// STANDARD/PRO export accumulator — addresses TBD in firmware. 0xFF means
+// STANDARD export accumulator — addresses TBD in firmware. 0xFF means
 // "skip reading; field not supported by current firmware".
 static constexpr uint8_t REG_PERIOD_AVG_P_NEG[3] = {0xFF, 0xFF, 0xFF};
 
@@ -439,6 +439,144 @@ void RbAmpComponent::std_setup_() {
   this->std_start_latch_phase_();
 }
 
+// ---------------------------------------------------------------------------
+// STD snapshot banks (period_banks:, image 0x7E+, CAPABILITIES bit 8)
+// ---------------------------------------------------------------------------
+// Two latches never land in the same measurement window: a latch that would
+// follow another bank's latch by less than one window (~100 ms; 150 ms with
+// margin) is deferred.
+static constexpr uint32_t BANK_STAGGER_MS = 150;
+static const char *const BANK_FINISH_NAME[8] = {"rbamp_bank_fin0", "rbamp_bank_fin1", "rbamp_bank_fin2",
+                                                "rbamp_bank_fin3", "rbamp_bank_fin4", "rbamp_bank_fin5",
+                                                "rbamp_bank_fin6", "rbamp_bank_fin7"};
+static const char *const BANK_DEFER_NAME[8] = {"rbamp_bank_def0", "rbamp_bank_def1", "rbamp_bank_def2",
+                                               "rbamp_bank_def3", "rbamp_bank_def4", "rbamp_bank_def5",
+                                               "rbamp_bank_def6", "rbamp_bank_def7"};
+static const char *const BANK_START_NAME[8] = {"rbamp_bank_st0", "rbamp_bank_st1", "rbamp_bank_st2",
+                                               "rbamp_bank_st3", "rbamp_bank_st4", "rbamp_bank_st5",
+                                               "rbamp_bank_st6", "rbamp_bank_st7"};
+static const char *const BANK_CYCLE_NAME[8] = {"rbamp_bank_iv0", "rbamp_bank_iv1", "rbamp_bank_iv2",
+                                               "rbamp_bank_iv3", "rbamp_bank_iv4", "rbamp_bank_iv5",
+                                               "rbamp_bank_iv6", "rbamp_bank_iv7"};
+
+RbAmpPeriodBank *RbAmpComponent::find_period_bank_(uint8_t bank) const {
+  for (RbAmpPeriodBank *b : this->period_banks_)
+    if (b->bank() == bank) return b;
+  return nullptr;
+}
+
+void RbAmpComponent::setup_period_banks_() {
+  if (this->period_banks_.empty()) return;
+  if (!bank::banks_available(this->std_caps_)) {
+    ESP_LOGW(TAG, "period_banks configured, but this module has no snapshot banks "
+                  "(CAPABILITIES bit 8) — period sensors stay unavailable");
+    return;
+  }
+  uint8_t slot = 0;
+  for (RbAmpPeriodBank *pb : this->period_banks_) {
+    const uint8_t bank = pb->bank();
+    if (!bank::bank_usable(bank, this->std_ode_)) {
+      ESP_LOGW(TAG, "period_banks: bank %u is the component's own energy bank on this image "
+                    "(no on-device counters) — entry ignored", bank);
+      continue;
+    }
+    if (pb->interval_ms() == 0) continue;  // manual: rbamp.latch_bank only
+    // Stagger the first latch of each timed bank by one window-plus.
+    const uint32_t first = 1000 + BANK_STAGGER_MS * (slot++);
+    const uint32_t every = pb->interval_ms();
+    this->set_timeout(BANK_START_NAME[bank], first, [this, bank, every]() {
+      this->latch_bank(bank);  // anchors the first period (primer)
+      this->set_interval(BANK_CYCLE_NAME[bank], every, [this, bank]() { this->latch_bank(bank); });
+    });
+  }
+}
+
+void RbAmpComponent::latch_bank(uint8_t bank) {
+  if (!this->std_ || !bank::banks_available(this->std_caps_)) {
+    ESP_LOGW(TAG, "latch_bank(%u) ignored: this module has no snapshot banks (CAPABILITIES bit 8)", bank);
+    return;
+  }
+  if (!bank::bank_usable(bank, this->std_ode_)) {
+    ESP_LOGW(TAG, "latch_bank(%u) ignored: bank out of range, or bank 0 is the component's own "
+                  "energy bank on an image without on-device counters", bank);
+    return;
+  }
+  if (this->find_period_bank_(bank) == nullptr) {
+    ESP_LOGW(TAG, "latch_bank(%u) ignored: bank not listed under period_banks:", bank);
+    return;
+  }
+  if (this->bank_pending_[bank]) {
+    ESP_LOGD(TAG, "latch_bank(%u): previous latch still in flight", bank);
+    return;
+  }
+  const uint32_t now = millis();
+  if (this->last_bank_latch_ms_ != 0 && (now - this->last_bank_latch_ms_) < BANK_STAGGER_MS) {
+    this->bank_pending_[bank] = true;
+    this->set_timeout(BANK_DEFER_NAME[bank], BANK_STAGGER_MS, [this, bank]() {
+      this->bank_pending_[bank] = false;
+      this->latch_bank(bank);
+    });
+    return;
+  }
+  BankBus bus{this};
+  if (bank::Engine<BankBus>::begin(bus, bank, &this->bank_state_[bank], now) != bank::Begin::OK) {
+    ESP_LOGW(TAG, "Bank %u: arm/latch write failed — period skipped", bank);
+    return;
+  }
+  this->last_bank_latch_ms_ = now;
+  this->bank_pending_[bank] = true;
+  this->set_timeout(BANK_FINISH_NAME[bank], bank::SETTLE_MS, [this, bank]() { this->bank_finish_(bank); });
+}
+
+void RbAmpComponent::bank_finish_(uint8_t bank) {
+  this->bank_pending_[bank] = false;
+  RbAmpPeriodBank *pb = this->find_period_bank_(bank);
+  if (pb == nullptr) return;
+  BankBus bus{this};
+  bank::Snapshot s;
+  uint32_t dt_ms = 0;
+  const uint8_t nch = this->n_channels_ < bank::MAX_CHANNELS ? this->n_channels_ : bank::MAX_CHANNELS;
+  switch (bank::Engine<BankBus>::finish(bus, bank, nch, &this->bank_state_[bank], millis(), &s, &dt_ms)) {
+    case bank::Finish::PUBLISH: {
+      auto pub = [](sensor::Sensor *sn, float v) {
+        if (sn != nullptr) sn->publish_state(v);
+      };
+      pub(pb->power_, s.p_avg);
+      pub(pb->reactive_power_, s.q_avg);
+      pub(pb->apparent_power_, s.s_avg);
+      pub(pb->energy_, (float) bank::energy_wh(s.e_pos, dt_ms, s.nsamp));
+      pub(pb->energy_exported_, (float) std::fabs(bank::energy_wh(s.e_neg, dt_ms, s.nsamp)));  // magnitude, like energy_exported
+      pub(pb->max_power_, s.max_p);
+      pub(pb->max_current_, s.max_i);
+      pub(pb->max_voltage_, s.max_u);
+      pub(pb->min_voltage_, s.min_u);
+      pub(pb->period_length_, (float) dt_ms / 1000.0f);
+      for (uint8_t ch = 0; ch < s.channels; ch++) {
+        pub(pb->ch_power_[ch], s.ch_p_avg[ch]);
+        pub(pb->ch_energy_[ch], (float) bank::energy_wh(s.ch_pos[ch], dt_ms, s.nsamp));
+        pub(pb->ch_energy_exported_[ch], (float) std::fabs(bank::energy_wh(s.ch_neg[ch], dt_ms, s.nsamp)));
+      }
+      ESP_LOGD(TAG, "Bank %u: period %u ms, avg P %.1f W", bank, (unsigned) dt_ms, s.p_avg);
+      break;
+    }
+    case bank::Finish::PRIMED:
+      ESP_LOGD(TAG, "Bank %u: period start anchored — first sensor values after the next latch", bank);
+      break;
+    case bank::Finish::REARMED:
+      ESP_LOGW(TAG, "Bank %u lost its arm (module reset?) — re-armed; one period is skipped", bank);
+      break;
+    case bank::Finish::EMPTY:
+      ESP_LOGD(TAG, "Bank %u: no measurement window elapsed in the period — skipped", bank);
+      break;
+    case bank::Finish::NOT_VALID:
+      ESP_LOGD(TAG, "Bank %u has no snapshot yet", bank);
+      break;
+    case bank::Finish::BUS_ERROR:
+      ESP_LOGW(TAG, "Bank %u: snapshot read failed — period skipped", bank);
+      break;
+  }
+}
+
 void RbAmpComponent::std_apply_config_() {
   bool need_save = false;
 
@@ -482,7 +620,7 @@ void RbAmpComponent::std_apply_config_() {
   // would silently revert on device power-cycle (spec finding E9), the exact
   // failure mode the BASIC v1.6 persist-fix closed. Gate on this shipped,
   // queryable capability, NEVER on a planned map version: the earlier
-  // `>= 0x35` gate here keyed on a roadmap batch that shipped without E9.
+  // `>= 0x35` gate here keyed on a planned batch that shipped without E9.
   bool any_per_channel = false;
   for (uint8_t i = 0; i < 16 && !any_per_channel; i++) {
     any_per_channel = this->ct_models_request_[i] != 0xFF;
@@ -1144,7 +1282,7 @@ void RbAmpComponent::load_prefs_() {
   // unidirectional (BASIC tier) consumption energy (cap to 0 rather than
   // abort restore).
   //
-  // TODO(STANDARD-signedness, v1.4+): on STANDARD/PRO firmware with
+  // TODO(STANDARD-signedness, v1.4+): on STANDARD firmware with
   // FW_TIER bit2 (bidirectional), REG_PERIOD_AVG_P0 (0xDC) is signed —
   // net energy can legitimately be < 0 (net export). For that tier, replace
   // the `e >= 0.0` guard with `e > -kReasonableLowerBound` so net-export
@@ -1237,6 +1375,27 @@ static bool sensor_class_is_paired_(uint8_t cls) {
   return cls == SENSOR_CLASS_WIRED_CT || cls == SENSOR_CLASS_BUILTIN_CT;
 }
 
+// Firmware 1.4.22+ answers ERR_PARAM 0xFE to class/model writes once a
+// factory-paired module (class WIRED_CT/BUILTIN_CT) has any channel bound;
+// only factory mode lifts that. Read-back shows the model unchanged, so a
+// `ct_model_force:` write on such a module gets a specific message.
+void RbAmpComponent::log_ct_model_rejected_(uint8_t ch, uint8_t code, uint8_t applied) {
+  uint8_t cls = 0;
+  if (this->read_u8_(REG_SENSOR_CLASS, &cls) && sensor_class_is_paired_(cls)) {
+    ESP_LOGE(TAG,
+             "  CT_MODEL ch%u write REFUSED: factory-paired module: configuration locked "
+             "(class %u, requested 0x%02X, applied 0x%02X). `ct_model_force:` works in "
+             "factory mode only.",
+             ch, cls, code, applied);
+    return;
+  }
+  ESP_LOGE(TAG,
+           "  CT_MODEL ch%u write REJECTED by firmware: requested 0x%02X, "
+           "applied 0x%02X (unchanged) — ERR_PARAM. Check sensor_class + "
+           "model code against libs/spec/sensor_models.yaml.",
+           ch, code, applied);
+}
+
 void RbAmpComponent::apply_ct_model_() {
   // S4 read-compare-write: REG_CT_MODEL_CH0 (0x51) mirrors the applied value
   // for ch0, which is what the legacy single-channel path targets. Skip if
@@ -1275,6 +1434,11 @@ void RbAmpComponent::apply_ct_model_() {
     return;
   }
   delay(10);
+  uint8_t applied = 0;
+  if (this->read_u8_(REG_CT_MODEL_CH0, &applied) && applied != this->ct_model_) {
+    this->log_ct_model_rejected_(0, this->ct_model_, applied);
+    return;
+  }
   if (!this->save_user_config_()) {
     return;
   }
@@ -1485,11 +1649,7 @@ void RbAmpComponent::apply_ct_models_per_channel_() {
       continue;
     }
     if (applied != code) {
-      ESP_LOGE(TAG,
-               "  CT_MODEL ch%d write REJECTED by firmware: requested 0x%02X, "
-               "applied 0x%02X (unchanged) — ERR_PARAM. Check sensor_class + "
-               "model code against libs/spec/sensor_models.yaml.",
-               ch, code, applied);
+      this->log_ct_model_rejected_(static_cast<uint8_t>(ch), code, applied);
       continue;
     }
     ESP_LOGCONFIG(TAG, "  CT_MODEL ch%d = 0x%02X confirmed by readback", ch, code);
@@ -2197,6 +2357,7 @@ void RbAmpComponent::setup() {
   if (this->std_probe_()) {
     if (this->is_failed()) return;  // STD magic but unsupported map version
     this->std_setup_();
+    this->setup_period_banks_();
     return;  // BASIC setup path (appliers/prefs/latch primer) is 8-bit-only
   }
 
@@ -2205,6 +2366,9 @@ void RbAmpComponent::setup() {
     return;
   }
   ESP_LOGCONFIG(TAG, "  Firmware version: 0x%02X", this->firmware_version_);
+  if (!this->period_banks_.empty()) {
+    ESP_LOGW(TAG, "period_banks needs a 16-bit-map module (snapshot banks) — ignored on this module");
+  }
 
   // Firmware v1 (REG_VERSION == 0x01) ships with I²C general-call disabled —
   // writes to address 0x00 are silently dropped by the slave. Warn the user
@@ -2494,6 +2658,11 @@ void RbAmpComponent::dump_config() {
     }
     if (this->start_current_ua_request_ != 0xFFFF) {
       ESP_LOGCONFIG(TAG, "  Start current: %u uA", this->start_current_ua_request_);
+    }
+    for (RbAmpPeriodBank *pb : this->period_banks_) {
+      ESP_LOGCONFIG(TAG, "  Period bank %u: %s", pb->bank(),
+                    bank::banks_available(this->std_caps_) ? "available" : "NOT available (no CAPABILITIES bit 8)");
+      if (pb->interval_ms() != 0) ESP_LOGCONFIG(TAG, "    Auto-latch every %u ms", (unsigned) pb->interval_ms());
     }
     LOG_UPDATE_INTERVAL(this);
     return;

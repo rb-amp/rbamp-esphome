@@ -6,11 +6,25 @@ sensor platform for Home Assistant integration via ESPHome's native API.
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome import pins
-from esphome.components import i2c
+from esphome import automation, pins
+from esphome.components import i2c, sensor as esp_sensor  # the name `sensor` is rebound to our sensor/ subpackage on import
 from esphome.const import (
     CONF_ID,
     CONF_ADDRESS,
+    CONF_INTERVAL,
+    DEVICE_CLASS_APPARENT_POWER,
+    DEVICE_CLASS_CURRENT,
+    DEVICE_CLASS_POWER,
+    DEVICE_CLASS_REACTIVE_POWER,
+    DEVICE_CLASS_VOLTAGE,
+    STATE_CLASS_MEASUREMENT,
+    UNIT_AMPERE,
+    UNIT_SECOND,
+    UNIT_VOLT,
+    UNIT_VOLT_AMPS,
+    UNIT_VOLT_AMPS_REACTIVE,
+    UNIT_WATT,
+    UNIT_WATT_HOURS,
 )
 
 DEPENDENCIES = ["i2c"]
@@ -23,12 +37,14 @@ MULTI_CONF = True
 # at major.minor for wire-level bumps; minor bumps here can also cover
 # component-only feature additions (e.g. v1.4 adds `latch_interval:` YAML key
 # without any wire-protocol change).
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 
 rbamp_ns = cg.esphome_ns.namespace("rbamp")
 RbAmpComponent = rbamp_ns.class_(
     "RbAmpComponent", cg.PollingComponent, i2c.I2CDevice
 )
+RbAmpPeriodBank = rbamp_ns.class_("RbAmpPeriodBank")
+LatchBankAction = rbamp_ns.class_("LatchBankAction", automation.Action)
 
 CONF_DRDY_PIN = "drdy_pin"
 CONF_CT_MODEL = "ct_model"
@@ -38,6 +54,9 @@ CONF_CT_MODELS = "ct_models"
 # write would replace its individual calibration with the generic preset.
 # `ct_model_force: true` overrides the refusal AND the read-compare skip
 # (deliberate preset re-apply). Service use only; remove after the operation.
+# Firmware 1.4.22+ locks a paired module's class/model against normal-mode
+# writes even with the force flag (the force path works in factory mode only);
+# the component then logs "factory-paired module: configuration locked".
 CONF_CT_MODEL_FORCE = "ct_model_force"
 CONF_SENSOR_CLASS = "sensor_class"
 CONF_BIDIRECTIONAL = "bidirectional"
@@ -79,6 +98,113 @@ CONF_LATCH_INTERVAL = "latch_interval"
 # invalid value never reaches the bus. On devices without the capability the
 # key is ignored with a warning at boot.
 CONF_START_CURRENT_UA = "start_current_ua"
+
+# v1.10 — STD snapshot banks. `period_banks:` lists master-timed periods on the
+# module's eight banks (image 0x7E+, capability bit 8). Each entry latches on
+# its own `interval:` and/or from the `rbamp.latch_bank` action, and publishes
+# the period's averages / peaks / energy. Energy values are PERIOD values
+# (state_class measurement), not meters.
+CONF_PERIOD_BANKS = "period_banks"
+CONF_BANK = "bank"
+CONF_CHANNELS = "channels"
+CONF_MAX_POWER = "max_power"
+CONF_MAX_CURRENT = "max_current"
+CONF_MAX_VOLTAGE = "max_voltage"
+CONF_MIN_VOLTAGE = "min_voltage"
+CONF_PERIOD_LENGTH = "period_length"
+CONF_POWER = "power"
+CONF_REACTIVE_POWER = "reactive_power"
+CONF_APPARENT_POWER = "apparent_power"
+CONF_ENERGY = "energy"
+CONF_ENERGY_EXPORTED = "energy_exported"
+
+
+def _bank_sensor(unit, accuracy, device_class=None):
+    kwargs = dict(
+        unit_of_measurement=unit,
+        accuracy_decimals=accuracy,
+        state_class=STATE_CLASS_MEASUREMENT,
+    )
+    if device_class is not None:
+        kwargs["device_class"] = device_class
+    return esp_sensor.sensor_schema(**kwargs)
+
+
+_BANK_SENSORS = {
+    CONF_POWER: ("set_power_sensor", _bank_sensor(UNIT_WATT, 1, DEVICE_CLASS_POWER)),
+    CONF_REACTIVE_POWER: (
+        "set_reactive_power_sensor",
+        _bank_sensor(UNIT_VOLT_AMPS_REACTIVE, 1, DEVICE_CLASS_REACTIVE_POWER),
+    ),
+    CONF_APPARENT_POWER: (
+        "set_apparent_power_sensor",
+        _bank_sensor(UNIT_VOLT_AMPS, 1, DEVICE_CLASS_APPARENT_POWER),
+    ),
+    # Period energy: no device_class (HA would treat an energy class as a meter).
+    CONF_ENERGY: ("set_energy_sensor", _bank_sensor(UNIT_WATT_HOURS, 3)),
+    CONF_ENERGY_EXPORTED: ("set_energy_exported_sensor", _bank_sensor(UNIT_WATT_HOURS, 3)),
+    CONF_MAX_POWER: ("set_max_power_sensor", _bank_sensor(UNIT_WATT, 1, DEVICE_CLASS_POWER)),
+    CONF_MAX_CURRENT: ("set_max_current_sensor", _bank_sensor(UNIT_AMPERE, 3, DEVICE_CLASS_CURRENT)),
+    CONF_MAX_VOLTAGE: ("set_max_voltage_sensor", _bank_sensor(UNIT_VOLT, 1, DEVICE_CLASS_VOLTAGE)),
+    CONF_MIN_VOLTAGE: ("set_min_voltage_sensor", _bank_sensor(UNIT_VOLT, 1, DEVICE_CLASS_VOLTAGE)),
+    CONF_PERIOD_LENGTH: ("set_period_length_sensor", _bank_sensor(UNIT_SECOND, 1)),
+}
+
+_BANK_CHANNEL_SENSORS = {
+    CONF_POWER: ("set_channel_power_sensor", _BANK_SENSORS[CONF_POWER][1]),
+    CONF_ENERGY: ("set_channel_energy_sensor", _BANK_SENSORS[CONF_ENERGY][1]),
+    CONF_ENERGY_EXPORTED: (
+        "set_channel_energy_exported_sensor",
+        _BANK_SENSORS[CONF_ENERGY_EXPORTED][1],
+    ),
+}
+
+PERIOD_BANK_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(RbAmpPeriodBank),
+        cv.Required(CONF_BANK): cv.int_range(min=0, max=7),
+        # Auto-latch cadence. >= 1 s: one latch + the 300 ms settle per cycle.
+        cv.Optional(CONF_INTERVAL): cv.All(
+            cv.positive_time_period_milliseconds,
+            cv.Range(min=cv.TimePeriod(milliseconds=1000)),
+        ),
+        cv.Optional(CONF_CHANNELS): cv.All(
+            cv.ensure_list(
+                cv.Schema({cv.Optional(k): v[1] for k, v in _BANK_CHANNEL_SENSORS.items()})
+            ),
+            cv.Length(min=1, max=7),
+        ),
+        **{cv.Optional(k): v[1] for k, v in _BANK_SENSORS.items()},
+    }
+)
+
+
+def _validate_period_banks(banks):
+    seen = set()
+    for entry in banks:
+        n = entry[CONF_BANK]
+        if n in seen:
+            raise cv.Invalid(f"period_banks: bank {n} is listed twice")
+        seen.add(n)
+    return banks
+
+
+LATCH_BANK_ACTION_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.use_id(RbAmpComponent),
+        cv.Required(CONF_BANK): cv.templatable(cv.int_range(min=0, max=7)),
+    }
+)
+
+
+@automation.register_action("rbamp.latch_bank", LatchBankAction, LATCH_BANK_ACTION_SCHEMA)
+async def latch_bank_to_code(config, action_id, template_arg, args):
+    paren = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg)
+    cg.add(var.set_parent(paren))
+    cg.add(var.set_bank(await cg.templatable(config[CONF_BANK], args, cg.uint8)))
+    return var
+
 
 
 def _validate_start_current_ua(value):
@@ -290,6 +416,9 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_GROUP_ID): cv.All(cv.uint8_t, cv.Range(min=0, max=255)),
             cv.Optional(CONF_LATCH_INTERVAL): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_START_CURRENT_UA): _validate_start_current_ua,
+            cv.Optional(CONF_PERIOD_BANKS): cv.All(
+                cv.ensure_list(PERIOD_BANK_SCHEMA), cv.Length(min=1, max=8), _validate_period_banks
+            ),
         }
     )
     .extend(cv.polling_component_schema("60s"))
@@ -399,5 +528,20 @@ async def to_code(config):
         ))
 
     # v1.8 start current (µA, pre-validated; capability-gated at runtime)
+    for entry in config.get(CONF_PERIOD_BANKS, []):
+        pb = cg.new_Pvariable(entry[CONF_ID], entry[CONF_BANK])
+        if CONF_INTERVAL in entry:
+            cg.add(pb.set_interval_ms(int(entry[CONF_INTERVAL].total_milliseconds)))
+        for key, (setter, _schema) in _BANK_SENSORS.items():
+            if key in entry:
+                sens = await esp_sensor.new_sensor(entry[key])
+                cg.add(getattr(pb, setter)(sens))
+        for ch, ch_conf in enumerate(entry.get(CONF_CHANNELS, [])):
+            for key, (setter, _schema) in _BANK_CHANNEL_SENSORS.items():
+                if key in ch_conf:
+                    sens = await esp_sensor.new_sensor(ch_conf[key])
+                    cg.add(getattr(pb, setter)(ch, sens))
+        cg.add(var.add_period_bank(pb))
+
     if CONF_START_CURRENT_UA in config:
         cg.add(var.set_start_current_ua(config[CONF_START_CURRENT_UA]))

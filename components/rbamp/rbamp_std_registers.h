@@ -5,7 +5,7 @@
 #define RBAMP_STD_REGISTERS_H
 #include <stdint.h>
 
-static constexpr uint32_t RBAMP_STD_SCHEMA_CRC32 = 0xB9F0C00EU;
+static constexpr uint32_t RBAMP_STD_SCHEMA_CRC32 = 0x430F51B7U;
 
 namespace rbamp_std {
 

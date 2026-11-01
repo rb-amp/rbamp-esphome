@@ -2,11 +2,16 @@
 
 #include <string>
 
+#include <vector>
+
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"
+
+#include "rbamp_std_bank.h"
 
 namespace esphome {
 namespace rbamp {
@@ -44,8 +49,58 @@ struct RbAmpStdEnergyPrefData {
 
 static constexpr uint32_t RBAMP_STD_ENERGY_PREF_VERSION = 0x52425331;  // "RBS1"
 
+// One user-visible STD snapshot bank (period_banks: entry). Pure holder of the
+// output sensors; the timing/arm/read logic lives in the component and in
+// rbamp_std_bank.h.
+class RbAmpPeriodBank {
+ public:
+  explicit RbAmpPeriodBank(uint8_t bank) : bank_(bank) {}
+  uint8_t bank() const { return bank_; }
+  void set_interval_ms(uint32_t ms) { interval_ms_ = ms; }
+  uint32_t interval_ms() const { return interval_ms_; }
+
+  void set_power_sensor(sensor::Sensor *s) { power_ = s; }
+  void set_reactive_power_sensor(sensor::Sensor *s) { reactive_power_ = s; }
+  void set_apparent_power_sensor(sensor::Sensor *s) { apparent_power_ = s; }
+  void set_energy_sensor(sensor::Sensor *s) { energy_ = s; }
+  void set_energy_exported_sensor(sensor::Sensor *s) { energy_exported_ = s; }
+  void set_max_power_sensor(sensor::Sensor *s) { max_power_ = s; }
+  void set_max_current_sensor(sensor::Sensor *s) { max_current_ = s; }
+  void set_max_voltage_sensor(sensor::Sensor *s) { max_voltage_ = s; }
+  void set_min_voltage_sensor(sensor::Sensor *s) { min_voltage_ = s; }
+  void set_period_length_sensor(sensor::Sensor *s) { period_length_ = s; }
+  // Per-channel outputs; ch >= 7 is ignored (the module serves at most 7 here).
+  void set_channel_power_sensor(uint8_t ch, sensor::Sensor *s) {
+    if (ch < 7) ch_power_[ch] = s;
+  }
+  void set_channel_energy_sensor(uint8_t ch, sensor::Sensor *s) {
+    if (ch < 7) ch_energy_[ch] = s;
+  }
+  void set_channel_energy_exported_sensor(uint8_t ch, sensor::Sensor *s) {
+    if (ch < 7) ch_energy_exported_[ch] = s;
+  }
+
+ protected:
+  friend class RbAmpComponent;
+  uint8_t bank_;
+  uint32_t interval_ms_{0};
+  sensor::Sensor *power_{nullptr}, *reactive_power_{nullptr}, *apparent_power_{nullptr};
+  sensor::Sensor *energy_{nullptr}, *energy_exported_{nullptr};
+  sensor::Sensor *max_power_{nullptr}, *max_current_{nullptr};
+  sensor::Sensor *max_voltage_{nullptr}, *min_voltage_{nullptr};
+  sensor::Sensor *period_length_{nullptr};
+  sensor::Sensor *ch_power_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  sensor::Sensor *ch_energy_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  sensor::Sensor *ch_energy_exported_[7]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  static_assert(bank::MAX_CHANNELS == 7, "per-channel bank sensor arrays are sized for 7 channels");
+};
+
 class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
  public:
+  // STD snapshot banks (period_banks:). Latch a configured bank now; the
+  // result is published ~300 ms later. Gated on CAPABILITIES bit 8.
+  void add_period_bank(RbAmpPeriodBank *b) { period_banks_.push_back(b); }
+  void latch_bank(uint8_t bank);
   void setup() override;
   void update() override;
   void dump_config() override;
@@ -265,6 +320,20 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   // counter DELTAS into the NVS totals (published values stay monotonic
   // across module restart step-back and LT generation resets).
   void std_energy_counters_update_();
+
+  // --- STD snapshot banks (image 0x7E+, CAPABILITIES bit 8) ---
+  struct BankBus {  // adapter for bank::Engine
+    RbAmpComponent *c;
+    bool read(uint16_t reg, uint8_t *buf, size_t n) { return c->std_read_(reg, buf, n); }
+    bool write_u8(uint16_t reg, uint8_t v) { return c->std_write_u8_(reg, v); }
+  };
+  void setup_period_banks_();
+  void bank_finish_(uint8_t bank);
+  RbAmpPeriodBank *find_period_bank_(uint8_t bank) const;
+  std::vector<RbAmpPeriodBank *> period_banks_;
+  bank::State bank_state_[bank::MAX_BANKS];
+  bool bank_pending_[bank::MAX_BANKS]{false, false, false, false, false, false, false, false};
+  uint32_t last_bank_latch_ms_{0};
   void load_std_energy_prefs_();
 
   // STD identity, captured by std_probe_ from the discovery burst.
@@ -358,6 +427,7 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
   // ct_model_ch page. Flat-path (ch<3) for the 0x51-0x53 mirror set,
   // window-path (ch>=3) via CHFIELD_CT_MODEL for senior channels.
   bool ct_model_write_flat_(uint8_t ch, uint8_t code);
+  void log_ct_model_rejected_(uint8_t ch, uint8_t code, uint8_t applied);
   bool ct_model_write_via_window_(uint8_t ch, uint8_t code);
   bool ct_model_read_(uint8_t ch, uint8_t *out);
   void apply_address_change_();
@@ -511,6 +581,13 @@ class RbAmpComponent : public PollingComponent, public i2c::I2CDevice {
                 sizeof(energy_export_wh_) == 3 * sizeof(double),
                 "[3] arrays require a `< 3` clamp at every index site");
 };
+
+template<typename... Ts> class LatchBankAction : public Action<Ts...>, public Parented<RbAmpComponent> {
+ public:
+  TEMPLATABLE_VALUE(uint8_t, bank)
+  void play(const Ts &...x) override { this->parent_->latch_bank(this->bank_.value(x...)); }
+};
+
 
 }  // namespace rbamp
 }  // namespace esphome

@@ -35,7 +35,7 @@ rbamp:
   update_interval: 60s
   # drdy_pin: GPIO15            # optional hint pin (open-drain on PA12)
   # ct_model: SCT_013_030       # if your CT-clip needs explicit selection
-  # bidirectional: true         # STANDARD/PRO tier — export accumulator (TBD)
+  # bidirectional: true         # STANDARD (STD) line — export accumulator (TBD)
 
 sensor:
   - platform: rbamp
